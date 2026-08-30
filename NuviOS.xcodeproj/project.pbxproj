@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		000000000000000000000120 /* NuviotvOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NuviotvOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000120 /* NuviOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NuviOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		000000000000000000000010 /* NuviotvOS */ = {
+		000000000000000000000010 /* NuviOS */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = NuviotvOS;
+			path = NuviOS;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -30,7 +30,7 @@
 		000000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000010 /* NuviotvOS */,
+				000000000000000000000010 /* NuviOS */,
 				000000000000000000000020 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -38,7 +38,7 @@
 		000000000000000000000020 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000120 /* NuviotvOS.app */,
+				000000000000000000000120 /* NuviOS.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -46,9 +46,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		000000000000000100000000 /* NuviotvOS */ = {
+		000000000000000100000000 /* NuviOS */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "NuviotvOS" */;
+			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "NuviOS" */;
 			buildPhases = (
 				000000000000000120000000 /* Sources */,
 				000000000000000130000000 /* Frameworks */,
@@ -57,11 +57,11 @@
 			buildRules = (
 			);
 			fileSystemSynchronizedGroups = (
-				000000000000000000000010 /* NuviotvOS */,
+				000000000000000000000010 /* NuviOS */,
 			);
-			name = NuviotvOS;
+			name = NuviOS;
 			productName = MyApp;
-			productReference = 000000000000000000000120 /* NuviotvOS.app */;
+			productReference = 000000000000000000000120 /* NuviOS.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -79,7 +79,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "NuviotvOS" */;
+			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "NuviOS" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -93,7 +93,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				000000000000000100000000 /* NuviotvOS */,
+				000000000000000100000000 /* NuviOS */,
 			);
 		};
 /* End PBXProject section */
@@ -115,7 +115,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		000000000000000011000000 /* Debug configuration for PBXProject "NuviotvOS" */ = {
+		000000000000000011000000 /* Debug configuration for PBXProject "NuviOS" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -185,7 +185,7 @@
 			};
 			name = Debug;
 		};
-		000000000000000012000000 /* Release configuration for PBXProject "NuviotvOS" */ = {
+		000000000000000012000000 /* Release configuration for PBXProject "NuviOS" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -247,10 +247,10 @@
 			};
 			name = Release;
 		};
-		000000000000000111000000 /* Debug configuration for PBXNativeTarget "NuviotvOS" */ = {
+		000000000000000111000000 /* Debug configuration for PBXNativeTarget "NuviOS" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphone*]" = NuviotvOS.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphone*]" = NuviOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = MZT889Z6FM;
@@ -275,7 +275,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "NuviotvOS/NuviotvOS-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "NuviOS/NuviOS-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				"TARGETED_DEVICE_FAMILY[sdk=appletv*]" = 3;
@@ -283,10 +283,10 @@
 			};
 			name = Debug;
 		};
-		000000000000000112000000 /* Release configuration for PBXNativeTarget "NuviotvOS" */ = {
+		000000000000000112000000 /* Release configuration for PBXNativeTarget "NuviOS" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphone*]" = NuviotvOS.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphone*]" = NuviOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = MZT889Z6FM;
@@ -311,7 +311,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "NuviotvOS/NuviotvOS-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "NuviOS/NuviOS-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				"TARGETED_DEVICE_FAMILY[sdk=appletv*]" = 3;
@@ -322,19 +322,19 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		000000000000000010000000 /* Build configuration list for PBXProject "NuviotvOS" */ = {
+		000000000000000010000000 /* Build configuration list for PBXProject "NuviOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000011000000 /* Debug configuration for PBXProject "NuviotvOS" */,
-				000000000000000012000000 /* Release configuration for PBXProject "NuviotvOS" */,
+				000000000000000011000000 /* Debug configuration for PBXProject "NuviOS" */,
+				000000000000000012000000 /* Release configuration for PBXProject "NuviOS" */,
 			);
 			defaultConfigurationName = Release;
 		};
-		000000000000000110000000 /* Build configuration list for PBXNativeTarget "NuviotvOS" */ = {
+		000000000000000110000000 /* Build configuration list for PBXNativeTarget "NuviOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000111000000 /* Debug configuration for PBXNativeTarget "NuviotvOS" */,
-				000000000000000112000000 /* Release configuration for PBXNativeTarget "NuviotvOS" */,
+				000000000000000111000000 /* Debug configuration for PBXNativeTarget "NuviOS" */,
+				000000000000000112000000 /* Release configuration for PBXNativeTarget "NuviOS" */,
 			);
 			defaultConfigurationName = Release;
 		};

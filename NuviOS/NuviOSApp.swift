@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct NuviotvOSApp: App {
+struct NuviOSApp: App {
     @StateObject private var session = AppSession()
 
     var body: some Scene {

@@ -16,8 +16,8 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "000000000000000100000000"
-               BuildableName = "NuviotvOS.app"
-               ReferencedContainer = "container:NuviotvOS.xcodeproj">
+               BuildableName = "NuviOS.app"
+               ReferencedContainer = "container:NuviOS.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -45,8 +45,8 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "000000000000000100000000"
-            BuildableName = "NuviotvOS.app"
-            ReferencedContainer = "container:NuviotvOS.xcodeproj">
+            BuildableName = "NuviOS.app"
+            ReferencedContainer = "container:NuviOS.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -61,8 +61,8 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "000000000000000100000000"
-            BuildableName = "NuviotvOS.app"
-            ReferencedContainer = "container:NuviotvOS.xcodeproj">
+            BuildableName = "NuviOS.app"
+            ReferencedContainer = "container:NuviOS.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

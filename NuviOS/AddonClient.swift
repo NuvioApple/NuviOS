@@ -184,9 +184,29 @@ struct MetaDetail: Decodable, Equatable {
     /// Episodes, for a series. Movies leave this empty.
     let videos: [MetaVideo]
 
+    /// YouTube ids for the title's trailers, best first.
+    ///
+    /// Cinemeta and the addons that follow it already carry these, which is
+    /// why trailers need no API key: the meta response the detail screen
+    /// fetches anyway is the same one that names the trailer.
+    let trailerYouTubeIDs: [String]
+
     enum CodingKeys: String, CodingKey {
         case id, type, name, poster, background, logo, description, releaseInfo
         case imdbRating, runtime, genres, genre, cast, director, videos
+        case trailers, trailerStreams
+    }
+
+    /// `trailerStreams` is the newer shape and names the id outright;
+    /// `trailers` is the older one, where `source` is the id and the entry may
+    /// be a clip or a featurette rather than a trailer.
+    private struct TrailerStream: Decodable {
+        let ytId: String?
+    }
+
+    private struct TrailerEntry: Decodable {
+        let source: String?
+        let type: String?
     }
 
     init(from decoder: Decoder) throws {
@@ -222,6 +242,18 @@ struct MetaDetail: Decodable, Equatable {
         cast = try c.decodeIfPresent([String].self, forKey: .cast) ?? []
         director = try c.decodeIfPresent([String].self, forKey: .director) ?? []
         videos = ((try? c.decodeIfPresent([MetaVideo].self, forKey: .videos)) ?? []) ?? []
+
+        let streams = (try? c.decodeIfPresent([TrailerStream].self, forKey: .trailerStreams)) ?? []
+        let entries = (try? c.decodeIfPresent([TrailerEntry].self, forKey: .trailers)) ?? []
+        // Anything that isn't a trailer is dropped rather than ranked: a hero
+        // that silently plays a behind-the-scenes clip reads as a bug.
+        let fromEntries = entries
+            .filter { ($0.type ?? "Trailer").caseInsensitiveCompare("Trailer") == .orderedSame }
+            .compactMap { $0.source }
+        var seen = Set<String>()
+        trailerYouTubeIDs = (streams.compactMap { $0.ytId } + fromEntries)
+            .map { $0.trimmed }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     /// Episodes grouped by season, seasons in order, specials (season 0) last

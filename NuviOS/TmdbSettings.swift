@@ -3,12 +3,17 @@ import Combine
 
 // MARK: - Settings
 
-/// Where the TMDB key lives.
+/// Where the optional TMDB key lives.
 ///
-/// Upstream compiles its own key in from `local.properties`
-/// (`BuildConfig.TMDB_API_KEY`), which is a build secret this port doesn't
-/// have and mustn't ship. So the key is the user's own: trailers stay off
-/// until one is entered, and nothing else in the app depends on it.
+/// Trailers do not need it. They come from the addon's own meta response,
+/// which already carries `trailerStreams`/`trailers` — so the home screen
+/// plays trailers out of the box.
+///
+/// The key is a fallback for addons that don't carry trailers. Upstream
+/// compiles its own in from `local.properties` (`BuildConfig.TMDB_API_KEY`),
+/// which is a build secret this port doesn't have and mustn't ship, so a user
+/// who wants that extra coverage supplies their own. Nothing else in the app
+/// depends on it.
 @MainActor
 final class TmdbSettings: ObservableObject {
     static let shared = TmdbSettings()
@@ -30,7 +35,8 @@ final class TmdbSettings: ObservableObject {
     /// Trailers only ever autoplay muted, the way every streaming app opens.
     @Published var startMuted = true
 
-    var canFetchTrailers: Bool { useTrailers && !apiKey.trimmed.isEmpty }
+    /// The addon path needs no credentials, so the toggle alone decides.
+    var canFetchTrailers: Bool { useTrailers }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults

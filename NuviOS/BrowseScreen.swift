@@ -525,7 +525,7 @@ private struct BillboardPage: View {
 
     /// Re-runs whenever anything that should start or stop a trailer changes.
     private var trailerTaskID: String {
-        "\(isCurrent)|\(scenePhase == .active)|\(tmdb.canFetchTrailers)|\(tmdb.apiKey.trimmed.isEmpty)"
+        "\(isCurrent)|\(scenePhase == .active)|\(tmdb.canFetchTrailers)|\(tmdb.apiKey.trimmed.isEmpty)|\(hero.item.id)"
     }
 
     private func manageTrailer() async {
@@ -541,12 +541,13 @@ private struct BillboardPage: View {
         }
 
         // The lookup goes first and the beat of stillness runs alongside it,
-        // not after it. Two TMDB round trips took longer than the carousel's
+        // not after it. The round trips took longer than the carousel's
         // dwell, so the task was cancelled by the page turning before it ever
-        // produced a key — the same race on every page, so no trailer ever
+        // produced an id — the same race on every page, so no trailer ever
         // played. Overlapping them spends the pause we wanted anyway.
         async let resolved = TrailerService.shared.youTubeKey(
             for: hero.item,
+            addonBaseURL: hero.addonBaseURL,
             apiKey: tmdb.apiKey
         )
         async let beat: Void = Task.sleep(for: .seconds(2.5))

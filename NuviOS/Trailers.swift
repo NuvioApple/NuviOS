@@ -5,13 +5,22 @@ import WebKit
 
 // MARK: - Lookup
 
-/// Finds a title's YouTube trailer through TMDB, the same path upstream's
-/// `TrailerService` takes: resolve a TMDB id, read `/videos`, rank the
-/// candidates, keep the YouTube key.
+/// Finds a title's YouTube trailer.
 ///
-/// Upstream then de-muxes the YouTube stream so ExoPlayer can play it. This
-/// port plays the key in YouTube's own embedded player instead — no
-/// extraction, and it stays inside YouTube's terms.
+/// The addon is asked first. Cinemeta — and everything modelled on it —
+/// already returns `trailerStreams`/`trailers` alongside the artwork and
+/// description, so the trailer costs one request the app would make anyway
+/// and needs no credentials of any kind.
+///
+/// TMDB is the fallback, and only when the user has supplied their own key.
+/// Upstream compiles a key into the build (`BuildConfig.TMDB_API_KEY`); this
+/// port can't ship someone else's, and now that the source is public it
+/// certainly can't. So TMDB covers the addons that don't carry trailers, and
+/// everyone else gets trailers without setting anything up.
+///
+/// Upstream de-muxes the YouTube stream so ExoPlayer can play it. This port
+/// plays the id in YouTube's own embedded player instead — no extraction, and
+/// it stays inside YouTube's terms.
 actor TrailerService {
     static let shared = TrailerService()
 
@@ -26,16 +35,36 @@ actor TrailerService {
         self.session = session
     }
 
-    func youTubeKey(for item: MetaItem, apiKey: String) async -> String? {
-        let key = apiKey.trimmed
-        guard !key.isEmpty else { return nil }
-
+    /// `addonBaseURL` is the addon that served this item, so the meta request
+    /// goes back to the one that already knows about it.
+    func youTubeKey(for item: MetaItem, addonBaseURL: String?, apiKey: String) async -> String? {
         let cacheKey = "\(item.type)|\(item.id)"
         if let cached = cache[cacheKey] { return cached }
 
-        let resolved = await lookUp(item: item, apiKey: key)
+        var resolved = await addonTrailerID(for: item, baseURL: addonBaseURL)
+
+        let key = apiKey.trimmed
+        if resolved == nil, !key.isEmpty {
+            resolved = await lookUp(item: item, apiKey: key)
+        }
+
         cache[cacheKey] = resolved
         return resolved
+    }
+
+    /// The addon's own answer. A failure here is not worth surfacing: the
+    /// caller either falls through to TMDB or shows the backdrop it was
+    /// already showing.
+    private func addonTrailerID(for item: MetaItem, baseURL: String?) async -> String? {
+        guard let baseURL,
+              !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        let detail = try? await AddonClient().meta(
+            baseURL: baseURL,
+            type: item.type,
+            id: item.id
+        )
+        return detail?.trailerYouTubeIDs.first
     }
 
     private func lookUp(item: MetaItem, apiKey: String) async -> String? {

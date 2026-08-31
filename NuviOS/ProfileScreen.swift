@@ -33,6 +33,8 @@ struct ProfileScreen: View {
     }
 
     @State private var destination: Destination?
+    /// Collapsed by default: the key is a fallback, not a setup step.
+    @State private var showTmdbKey = false
 
     var body: some View {
         NavigationStack {
@@ -216,8 +218,9 @@ struct ProfileScreen: View {
 
     // MARK: Trailers
 
-    /// Upstream compiles its own TMDB key into the build; this port can't ship
-    /// someone else's key, so trailers run on the user's.
+    /// Trailers come from the addon's own metadata and need nothing set up.
+    /// The TMDB key is optional extra coverage for addons that don't carry
+    /// them, so it sits behind a disclosure rather than in the way.
     private var trailers: some View {
         Section(title: "Trailers") {
             VStack(alignment: .leading, spacing: 12) {
@@ -227,23 +230,32 @@ struct ProfileScreen: View {
                     .tint(theme.palette.accent)
 
                 if tmdb.useTrailers {
-                    SecureField("TMDB API key", text: $tmdb.apiKey)
-                        .textFieldStyle(.plain)
-                        .platformNoAutocapitalization()
-                        .autocorrectionDisabled()
-                        .font(.subheadline)
-                        .foregroundStyle(.white)
-                        .padding(12)
-                        .glassCard(cornerRadius: 14)
+                    Text("Trailers come from your addons and play on YouTube.")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.4))
+                        .fixedSize(horizontal: false, vertical: true)
 
-                    Text(
-                        tmdb.canFetchTrailers
-                            ? "Trailers come from TMDB and play on YouTube."
-                            : "Add a free TMDB API key (themoviedb.org → Settings → API) to play trailers."
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.4))
-                    .fixedSize(horizontal: false, vertical: true)
+                    DisclosureGroup("TMDB key (optional)", isExpanded: $showTmdbKey) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            SecureField("TMDB API key", text: $tmdb.apiKey)
+                                .textFieldStyle(.plain)
+                                .platformNoAutocapitalization()
+                                .autocorrectionDisabled()
+                                .font(.subheadline)
+                                .foregroundStyle(.white)
+                                .padding(12)
+                                .glassCard(cornerRadius: 14)
+
+                            Text("Only used when an addon doesn't supply a trailer itself. A free key comes from themoviedb.org → Settings → API.")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.4))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.top, 8)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.8))
+                    .tint(theme.palette.accent)
                 }
             }
         }

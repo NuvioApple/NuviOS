@@ -199,7 +199,7 @@ struct CinematicBackdrop: View {
 
 // MARK: - iOS
 
-#if os(iOS)
+#if os(iOS) || os(macOS) || os(tvOS)
 
 /// One collection as a shelf of folder tiles.
 ///
@@ -242,7 +242,7 @@ struct CollectionShelf: View {
                         }
                         .buttonStyle(.pressable)
                         .accessibilityLabel("\(folder.title), \(collection.title)")
-                        .onHover { inside in
+                        .platformOnHover { inside in
                             // Leaving a tile only clears the pointer if it
                             // hasn't already landed on its neighbour.
                             if inside { hovered = folder.id }
@@ -262,15 +262,38 @@ struct CollectionShelf: View {
         }
     }
 
+    /// Whether a tile's animated cover should be running. The television has a
+    /// real answer — the remote is pointing at it — so nothing else counts
+    /// there; elsewhere the shelf's pointer-or-centre heuristic stands in.
+    private func shouldAnimate(_ folder: CollectionFolder, isFocused: Bool) -> Bool {
+        #if os(tvOS)
+        isFocused
+        #else
+        animating == folder.id
+        #endif
+    }
+
     private func tile(_ folder: CollectionFolder) -> some View {
         let size = FolderTile.size(folder.tileShape, height: tileHeight)
         return VStack(alignment: .leading, spacing: 8) {
-            FolderCover(
-                folder: folder,
-                size: size,
-                cornerRadius: Phone.posterRadius,
-                isAnimating: animating == folder.id
-            )
+            // On the TV the tile that is *being looked at* is simply the one
+            // that holds focus, so it answers for itself rather than being
+            // told by the shelf — and its animated cover runs only then.
+            // The shelf's own guess at what is being looked at is a stand-in
+            // for focus on the platforms that have no focus engine; using it
+            // here as well would leave a tile animating that the remote isn't
+            // pointing at.
+            FocusReader { isFocused in
+                FolderCover(
+                    folder: folder,
+                    size: size,
+                    cornerRadius: Phone.posterRadius,
+                    isAnimating: shouldAnimate(folder, isFocused: isFocused)
+                )
+                .scaleEffect(isFocused ? 1.06 : 1)
+                .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 12)
+                .animation(.spring(response: 0.34, dampingFraction: 0.74), value: isFocused)
+            }
 
             if !folder.hideTitle {
                 Text(folder.title)
@@ -330,9 +353,9 @@ struct FolderScreen: View {
             // artwork that stops short of the edges isn't a title card.
             .ignoresSafeArea(edges: .top)
         }
-        .navigationTitle(open.folder.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .navigationTitle("")
+        .platformInlineTitle()
+        .platformHiddenNavigationBackground()
         .navigationDestination(item: $selected) { DetailView(selection: $0) }
         .task {
             await model.load(
@@ -348,33 +371,32 @@ struct FolderScreen: View {
     /// The banner: artwork to all four edges, the folder's title treatment
     /// sitting on the floor of the frame, and a line of facts under it.
     private var banner: some View {
-        ZStack(alignment: .bottomLeading) {
-            CinematicBackdrop(
-                url: (open.folder.heroBackdropURL ?? open.backdropURL)
-                    .flatMap(URL.init(string:)),
-                animated: open.folder.animatedCoverURL,
-                height: bannerHeight
-            )
+        // Measured rather than assumed. Every size below comes from the width
+        // this banner was actually handed, so the title card fits an iPhone, a
+        // half-width iPad window and a TV without a per-platform branch — and
+        // cannot overhang an edge the way values read from the window-sized
+        // `Phone` globals could when the two disagreed.
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let padding = bannerPadding(for: width)
+            let content = min(width - padding * 2, 680)
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text(open.collectionTitle.uppercased())
-                    .font(.caption2.weight(.heavy))
-                    .tracking(1.8)
-                    .foregroundStyle(.white.opacity(0.62))
+            ZStack(alignment: .bottom) {
+                CinematicBackdrop(
+                    url: (open.folder.heroBackdropURL ?? open.backdropURL)
+                        .flatMap(URL.init(string:)),
+                    animated: open.folder.animatedCoverURL,
+                    height: bannerHeight
+                )
 
-                titleTreatment
-
-                if !facts.isEmpty {
-                    Text(facts.joined(separator: "  ·  "))
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.68))
-                        .lineLimit(1)
+                VStack(spacing: 10) {
+                    titleTreatment(content: content)
                 }
+                .overArtwork()
+                .frame(width: content)
+                .padding(.bottom, Phone.billboardBottomInset)
             }
-            .overArtwork()
-            .frame(width: Phone.billboardContentWidth, alignment: .leading)
-            .padding(.horizontal, Phone.pagePadding)
-            .padding(.bottom, Phone.billboardBottomInset)
+            .frame(width: width, height: bannerHeight)
         }
         .frame(height: bannerHeight)
         // A stretchy header, as Home's billboard has: pulling down grows the
@@ -395,23 +417,43 @@ struct FolderScreen: View {
     /// The author's own logo when they set one — a title treatment is what a
     /// service leads with — and typeset large when they didn't.
     @ViewBuilder
-    private var titleTreatment: some View {
-        if let logo = open.folder.titleLogoURL, let url = URL(string: logo) {
-            RemoteImage(url: url, contentMode: .fit)
-                .frame(
-                    maxWidth: Phone.billboardLogoWidth,
-                    maxHeight: Phone.billboardLogoHeight * 0.8,
-                    alignment: .leading
-                )
-        } else {
-            Text(open.folder.title)
-                .font(.system(size: Phone.billboardTitleSize, weight: .black))
-                .tracking(-0.8)
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
-                .fixedSize(horizontal: false, vertical: true)
+    private func titleTreatment(content: CGFloat) -> some View {
+        // Sized against the measure it sits in, never beyond it.
+        let logoWidth = min(content, 280 * bannerScale(for: content))
+        let logoHeight = min(88 * bannerScale(for: content), bannerHeight * 0.34)
+
+        return Group {
+            if let logo = open.folder.titleLogoURL, let url = URL(string: logo) {
+                RemoteImage(url: url, contentMode: .fit)
+                    .frame(width: logoWidth, height: logoHeight)
+            } else {
+                Text(open.folder.title)
+                    .font(.system(size: titleSize(for: content), weight: .black))
+                    .tracking(-0.8)
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: logoWidth)
+            }
         }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// The gutter grows with the window, the way the page's does.
+    private func bannerPadding(for width: CGFloat) -> CGFloat {
+        (16 * bannerScale(for: width)).rounded()
+    }
+
+    /// 1 at iPhone width, 2 by TV width, sliding in between so dragging a
+    /// window edge resizes the title card rather than snapping it.
+    private func bannerScale(for width: CGFloat) -> CGFloat {
+        min(max((width / 390).squareRoot(), 1), 2)
+    }
+
+    private func titleSize(for width: CGFloat) -> CGFloat {
+        (32 * bannerScale(for: width)).rounded()
     }
 
     /// What the folder actually holds, once it's loaded — the line a service
@@ -502,280 +544,3 @@ struct FolderScreen: View {
 
 #endif
 
-// MARK: - tvOS
-
-#if os(tvOS)
-
-/// One collection as a focusable shelf of folder tiles.
-struct CollectionShelfView: View {
-    let collection: MediaCollection
-    let metrics: LayoutMetrics
-    let onOpen: (CollectionFolder) -> Void
-
-    private var tileHeight: CGFloat { metrics.posterHeight * 0.78 }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: metrics.lerp(8, 12)) {
-            HStack(alignment: .firstTextBaseline, spacing: 14) {
-                Text(collection.title)
-                    .font(.system(size: metrics.rowTitleSize, weight: .bold))
-                    .tracking(-0.4)
-                    .foregroundStyle(.white)
-
-                Text("COLLECTION")
-                    .font(.system(size: metrics.lerp(10, 14), weight: .heavy))
-                    .tracking(1.2)
-                    .foregroundStyle(.white.opacity(0.42))
-                    .padding(.horizontal, metrics.lerp(7, 10))
-                    .padding(.vertical, metrics.lerp(3, 4))
-                    .background(Capsule().stroke(.white.opacity(0.16), lineWidth: 1))
-
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, metrics.pagePadding)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: metrics.posterSpacing) {
-                    ForEach(collection.folders) { folder in
-                        Button { onOpen(folder) } label: {
-                            EmptyView()
-                        }
-                        .buttonStyle(
-                            FolderTileStyle(
-                                folder: folder,
-                                metrics: metrics,
-                                height: tileHeight
-                            )
-                        )
-                        .accessibilityLabel("\(folder.title), \(collection.title)")
-                    }
-                }
-                .padding(.horizontal, metrics.pagePadding)
-                .padding(.vertical, metrics.posterFocusPadding)
-            }
-            .scrollClipDisabled()
-        }
-    }
-}
-
-/// The folder tile's whole look, including the focus lift the TV shell uses
-/// everywhere else.
-private struct FolderTileStyle: ButtonStyle {
-    @Environment(\.palette) private var palette
-    let folder: CollectionFolder
-    let metrics: LayoutMetrics
-    let height: CGFloat
-
-    func makeBody(configuration: Configuration) -> some View {
-        let size = FolderTile.size(folder.tileShape, height: height)
-
-        return FocusReader { isFocused in
-            VStack(alignment: .leading, spacing: metrics.lerp(6, 10)) {
-                FolderCover(
-                    folder: folder,
-                    size: size,
-                    cornerRadius: metrics.posterCornerRadius,
-                    isAnimating: isFocused
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: metrics.posterCornerRadius, style: .continuous)
-                        .strokeBorder(
-                            isFocused ? Color.white.opacity(0.95) : .clear,
-                            lineWidth: metrics.lerp(2, 4)
-                        )
-                }
-                .shadow(
-                    color: isFocused ? palette.accent.opacity(0.5) : .black.opacity(0.5),
-                    radius: isFocused ? metrics.lerp(14, 34) : 10,
-                    y: isFocused ? metrics.lerp(8, 20) : 6
-                )
-
-                if !folder.hideTitle {
-                    Text(folder.title)
-                        .font(.system(size: metrics.lerp(12, 19), weight: .semibold))
-                        .foregroundStyle(.white.opacity(isFocused ? 1 : 0.7))
-                        .lineLimit(1)
-                        .frame(width: size.width, alignment: .leading)
-                }
-            }
-            .scaleEffect(
-                configuration.isPressed ? 0.97 : (isFocused ? metrics.posterFocusScale : 1)
-            )
-            .zIndex(isFocused ? 1 : 0)
-            .animation(.spring(response: 0.34, dampingFraction: 0.74), value: isFocused)
-        }
-    }
-}
-
-/// An opened folder on the TV: the catalogs it bundles, one shelf each, over
-/// the folder's own artwork.
-struct FolderView: View {
-    let open: OpenFolder
-    let addons: AddonIndex
-
-    @StateObject private var model = CollectionFolderModel()
-    @EnvironmentObject private var theme: ThemeStore
-    @Environment(\.palette) private var palette
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var selected: MetaSelection?
-
-    var body: some View {
-        GeometryReader { proxy in
-            let metrics = LayoutMetrics(width: proxy.size.width, height: proxy.size.height)
-
-            ZStack {
-                NuvioBackground(intensity: 0.85)
-                backdrop(metrics)
-
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: metrics.rowSpacing) {
-                        header(metrics)
-
-                        if !model.skippedProviders.isEmpty {
-                            Text("\(model.skippedProviders.joined(separator: " and ")) sources in this folder need credentials this device doesn't have.")
-                                .font(.system(size: metrics.lerp(13, 20)))
-                                .foregroundStyle(.white.opacity(0.45))
-                                .padding(.horizontal, metrics.pagePadding)
-                        }
-
-                        if model.tabs.isEmpty {
-                            if model.isLoading {
-                                ForEach(0..<2, id: \.self) { _ in
-                                    shelfSkeleton(metrics)
-                                }
-                            } else {
-                                Text("Nothing in this folder could be loaded.")
-                                    .font(.system(size: metrics.lerp(14, 22)))
-                                    .foregroundStyle(.white.opacity(0.55))
-                                    .padding(.horizontal, metrics.pagePadding)
-                            }
-                        } else {
-                            ForEach(shelves) { tab in
-                                shelf(tab, metrics: metrics)
-                            }
-                        }
-                    }
-                    .padding(.bottom, metrics.lerp(40, 90))
-                }
-                .scrollClipDisabled()
-            }
-        }
-        .preferredColorScheme(.dark)
-        .task {
-            await model.load(folder: open.folder, showAllTab: open.showAllTab, addons: addons)
-        }
-        .fullScreenCover(item: $selected) { selection in
-            MetaDetailView(selection: selection)
-                .environmentObject(theme)
-                .environment(\.palette, theme.palette)
-        }
-    }
-
-    /// The TV lays every catalog out as its own shelf rather than hiding them
-    /// behind tabs — a remote scrolls further more easily than it switches
-    /// tabs — so the merged "All" tab is left out here.
-    private var shelves: [FolderTab] { model.tabs.filter { $0.id != "__all" } }
-
-    @ViewBuilder
-    private func backdrop(_ metrics: LayoutMetrics) -> some View {
-        if let backdrop = open.folder.heroBackdropURL ?? open.backdropURL,
-           let url = URL(string: backdrop) {
-            VStack {
-                RemoteImage(url: url)
-                    .frame(height: metrics.heroHeight * 0.8)
-                    .frame(maxWidth: .infinity)
-                    .clipped()
-                    .overlay {
-                        LinearGradient(
-                            colors: [.black.opacity(0.2), palette.background],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    }
-                Spacer(minLength: 0)
-            }
-            .ignoresSafeArea()
-        }
-    }
-
-    private func header(_ metrics: LayoutMetrics) -> some View {
-        VStack(alignment: .leading, spacing: metrics.lerp(6, 10)) {
-            Text(open.collectionTitle.uppercased())
-                .font(.system(size: metrics.lerp(11, 16), weight: .heavy))
-                .tracking(1.6)
-                .foregroundStyle(.white.opacity(0.5))
-
-            if let logo = open.folder.titleLogoURL, let url = URL(string: logo) {
-                RemoteImage(url: url, contentMode: .fit)
-                    .frame(
-                        maxWidth: metrics.heroLogoMaxWidth,
-                        maxHeight: metrics.heroLogoMaxHeight * 0.6,
-                        alignment: .leading
-                    )
-            } else {
-                Text(open.folder.title)
-                    .font(.system(size: metrics.heroTitleSize * 0.7, weight: .black))
-                    .foregroundStyle(.white)
-            }
-        }
-        .overArtwork()
-        .padding(.horizontal, metrics.pagePadding)
-        .padding(.top, metrics.lerp(20, 48))
-    }
-
-    @ViewBuilder
-    private func shelf(_ tab: FolderTab, metrics: LayoutMetrics) -> some View {
-        VStack(alignment: .leading, spacing: metrics.lerp(8, 12)) {
-            Text(tab.label)
-                .font(.system(size: metrics.rowTitleSize, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, metrics.pagePadding)
-
-            switch tab.content {
-            case .loading:
-                skeletonRow(metrics)
-            case .failed:
-                Text("This catalog didn't respond.")
-                    .font(.system(size: metrics.lerp(13, 20)))
-                    .foregroundStyle(.white.opacity(0.45))
-                    .padding(.horizontal, metrics.pagePadding)
-            case .loaded(let items):
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: metrics.posterSpacing) {
-                        ForEach(items) { item in
-                            let baseURL = model.baseURL(for: item, tab: tab)
-                            PosterCard(item: item, addonBaseURL: baseURL, metrics: metrics) {
-                                selected = MetaSelection(item: item, addonBaseURL: baseURL)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, metrics.pagePadding)
-                    .padding(.vertical, metrics.posterFocusPadding)
-                }
-                .scrollClipDisabled()
-            }
-        }
-    }
-
-    private func shelfSkeleton(_ metrics: LayoutMetrics) -> some View {
-        VStack(alignment: .leading, spacing: metrics.lerp(8, 14)) {
-            SkeletonBlock(cornerRadius: 8)
-                .frame(width: metrics.lerp(140, 300), height: metrics.lerp(18, 30))
-                .padding(.horizontal, metrics.pagePadding)
-            skeletonRow(metrics)
-        }
-    }
-
-    private func skeletonRow(_ metrics: LayoutMetrics) -> some View {
-        HStack(spacing: metrics.posterSpacing) {
-            ForEach(0..<6, id: \.self) { _ in
-                SkeletonBlock(cornerRadius: metrics.posterCornerRadius)
-                    .frame(width: metrics.posterWidth, height: metrics.posterHeight)
-            }
-        }
-        .padding(.horizontal, metrics.pagePadding)
-    }
-}
-
-#endif

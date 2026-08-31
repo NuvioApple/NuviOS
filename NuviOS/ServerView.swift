@@ -44,9 +44,11 @@ struct ServerView: View {
                     .textContentType(.URL)
                     .autocorrectionDisabled()
                     .font(.system(size: metrics.isCompact ? 16 : 26, weight: .medium))
-                    #if !os(tvOS)
+                    #if os(iOS)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
+                    #endif
+                    #if !os(tvOS)
                     .padding(14)
                     .background(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)

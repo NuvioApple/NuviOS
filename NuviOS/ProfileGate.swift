@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || os(macOS) || os(tvOS)
 import SwiftUI
 
 /// The "Who's watching?" screen every streaming app opens with when an

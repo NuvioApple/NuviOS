@@ -70,6 +70,10 @@ final class HomeViewModel: ObservableObject {
     /// The loaded manifests, keyed by id, so a collection source can be
     /// resolved back to the addon that serves it.
     @Published private(set) var addons = AddonIndex()
+    /// What this account is part-way through, read from the same backend rows
+    /// the TV app writes. Reloaded on its own clock: coming back from the
+    /// player should move this shelf without refetching every catalog behind it.
+    @Published private(set) var continueWatching: [ContinueWatchingItem] = []
 
     /// The content types the loaded rows actually cover, in a stable order,
     /// so the filter bar only ever offers tabs that lead somewhere.
@@ -93,6 +97,10 @@ final class HomeViewModel: ObservableObject {
     /// Which profile's addons are currently on screen, so a profile switch
     /// can be told apart from an ordinary re-appearance.
     private var loadedProfileID: Int?
+    /// The addon list behind the loaded rows, kept so the resume shelf can be
+    /// rebuilt without resolving it again.
+    private var loadedAddonURLs: [String] = []
+    private var continueWatchingJob: Task<Void, Never>?
 
     /// Loads once per appearance; `refresh()` forces a reload.
     func loadIfNeeded(session: AppSession, profile: Profile) async {
@@ -112,6 +120,26 @@ final class HomeViewModel: ObservableObject {
         await load(session: session, profile: profile)
     }
 
+    /// Re-reads only the resume shelf — what changes when a viewer comes back
+    /// from the player, without disturbing the catalogs.
+    func refreshContinueWatching(session: AppSession, profile: Profile) {
+        guard !loadedAddonURLs.isEmpty else { return }
+        loadContinueWatching(session: session, profile: profile, addonURLs: loadedAddonURLs)
+    }
+
+    private func loadContinueWatching(session: AppSession, profile: Profile, addonURLs: [String]) {
+        continueWatchingJob?.cancel()
+        continueWatchingJob = Task { [weak self] in
+            let items = await ContinueWatchingLoader.load(
+                session: session,
+                profile: profile,
+                addonURLs: addonURLs
+            )
+            guard !Task.isCancelled else { return }
+            self?.continueWatching = items
+        }
+    }
+
     private func load(session: AppSession, profile: Profile) async {
         isLoading = true
         loadError = nil
@@ -119,6 +147,7 @@ final class HomeViewModel: ObservableObject {
 
         loadedProfileID = profile.effectiveAddonProfileID
         let addonURLs = await resolveAddonURLs(session: session, profile: profile)
+        loadedAddonURLs = addonURLs
         let manifests = await manifests(for: addonURLs)
 
         guard !manifests.isEmpty else {
@@ -129,6 +158,7 @@ final class HomeViewModel: ObservableObject {
 
         addons = AddonIndex(manifests)
         searchSources = Self.buildSearchSources(from: manifests)
+        loadContinueWatching(session: session, profile: profile, addonURLs: addonURLs)
         await loadCollections(session: session, profile: profile)
         rows = Self.buildRows(from: manifests)
         guard !rows.isEmpty else {

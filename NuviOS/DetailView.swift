@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || os(macOS) || os(tvOS)
 import SwiftUI
 
 /// A title's page on the phone.
@@ -19,6 +19,7 @@ struct DetailView: View {
     @State private var synopsisExpanded = false
     @State private var scrollProgress: Double = 0
     @State private var related: MetaSelection?
+    @State private var isPickingStream = false
 
     private var item: MetaItem { selection.item }
 
@@ -76,9 +77,13 @@ struct DetailView: View {
             // then solid over the facts without fighting the scroll edge effect.
             navigationBar
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .platformHiddenNavigationBar()
         .navigationDestination(item: $related) { selection in
             DetailView(selection: selection)
+        }
+        .sheet(isPresented: $isPickingStream) {
+            StreamPicker(selection: selection, detail: detail)
+                .platformSheetSizing()
         }
         .task {
             do {
@@ -99,6 +104,13 @@ struct DetailView: View {
         FloatingTopBar(progress: scrollProgress) {
             AnyView(
                 HStack(spacing: 10) {
+                    // The Mac already has a back button, in the window's own
+                    // toolbar, and `platformHiddenNavigationBar` cannot take it
+                    // away there — it hides an iOS navigation bar. Drawing this
+                    // one too put two back chevrons on screen, one above the
+                    // other. The Mac keeps the system button, which is where a
+                    // Mac user looks for it, and this bar carries the title.
+                    #if !os(macOS)
                     Button {
                         dismiss()
                     } label: {
@@ -110,6 +122,7 @@ struct DetailView: View {
                     }
                     .buttonStyle(.pressable)
                     .accessibilityLabel("Back")
+                    #endif
 
                     Text(detail?.name ?? item.name)
                         .font(.headline)
@@ -217,20 +230,20 @@ struct DetailView: View {
 
     // MARK: Actions
 
-    /// The action row. Play is present but explicitly unavailable rather than
-    /// missing — a detail page with no Play button reads as broken, and a Play
-    /// button that silently does nothing is worse than one that says why.
+    /// The action row, led by Play. A series opens on its episode list, a
+    /// movie straight on its sources — the sheet decides which from the meta
+    /// it was handed, so the button reads the same either way.
     private var actions: some View {
         VStack(spacing: 12) {
             Button {
+                isPickingStream = true
             } label: {
-                Label("Playback not in this build", systemImage: "play.slash.fill")
+                Label(playTitle, systemImage: "play.fill")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
             }
             .buttonStyle(.glass)
-            .disabled(true)
 
             HStack(spacing: 34) {
                 DetailAction(
@@ -242,23 +255,17 @@ struct DetailView: View {
                     }
                 }
 
-                ShareLink(item: shareText) {
-                    VStack(spacing: 4) {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 20, weight: .semibold))
-                            .frame(height: 22)
-                        Text("Share")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .foregroundStyle(.white.opacity(0.9))
-                    .frame(width: 70)
-                }
-                .buttonStyle(.pressable)
+                PlatformShareButton(text: shareText)
             }
         }
         .padding(.horizontal, 20)
         .frame(maxWidth: Phone.readableWidth)
         .frame(maxWidth: .infinity)
+    }
+
+    /// Series lead with the episode step, so the button says so.
+    private var playTitle: String {
+        (detail?.seasons.isEmpty == false) ? "Episodes" : "Play"
     }
 
     private var shareText: String {
@@ -463,9 +470,5 @@ private struct CastChip: View {
                 .frame(width: 76)
         }
     }
-}
-
-extension String {
-    var nilWhenEmpty: String? { isEmpty ? nil : self }
 }
 #endif

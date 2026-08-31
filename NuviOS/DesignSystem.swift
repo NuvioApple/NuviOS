@@ -282,19 +282,33 @@ struct NuvioBackground: View {
     @Environment(\.palette) private var palette
     var intensity: Double = 1
 
+    /// How much of the accent wash actually reaches the screen.
+    ///
+    /// A television is watched in a dark room on a panel that renders black as
+    /// black. The wash that gives the phone screen its depth reads there as a
+    /// tinted haze behind the artwork, so the TV gets a fraction of it and the
+    /// corner vignette carries the depth instead.
+    private var glow: Double {
+        #if os(tvOS)
+        0.30 * intensity
+        #else
+        intensity
+        #endif
+    }
+
     var body: some View {
         ZStack {
             palette.background
 
             RadialGradient(
-                colors: [palette.accent.opacity(0.16 * intensity), .clear],
+                colors: [palette.accent.opacity(0.16 * glow), .clear],
                 center: .init(x: 0.08, y: 0.02),
                 startRadius: 0,
                 endRadius: 1100
             )
 
             RadialGradient(
-                colors: [palette.accentVariant.opacity(0.14 * intensity), .clear],
+                colors: [palette.accentVariant.opacity(0.14 * glow), .clear],
                 center: .init(x: 1.0, y: 1.0),
                 startRadius: 0,
                 endRadius: 1300
@@ -319,11 +333,13 @@ struct Wordmark: View {
     @Environment(\.palette) private var palette
     var size: CGFloat = 34
 
-    /// One binary ships to both platforms, so the badge says which one the
-    /// viewer is actually holding.
+    /// One binary ships to the TV, the phone and the Mac, so the badge says
+    /// which one the viewer is actually on.
     private static var platformName: String {
         #if os(tvOS)
         "tvOS"
+        #elseif os(macOS)
+        "macOS"
         #else
         "iOS"
         #endif

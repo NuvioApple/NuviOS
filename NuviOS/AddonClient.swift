@@ -181,10 +181,12 @@ struct MetaDetail: Decodable, Equatable {
     let genres: [String]
     let cast: [String]
     let director: [String]
+    /// Episodes, for a series. Movies leave this empty.
+    let videos: [MetaVideo]
 
     enum CodingKeys: String, CodingKey {
         case id, type, name, poster, background, logo, description, releaseInfo
-        case imdbRating, runtime, genres, genre, cast, director
+        case imdbRating, runtime, genres, genre, cast, director, videos
     }
 
     init(from decoder: Decoder) throws {
@@ -219,6 +221,267 @@ struct MetaDetail: Decodable, Equatable {
             ?? []
         cast = try c.decodeIfPresent([String].self, forKey: .cast) ?? []
         director = try c.decodeIfPresent([String].self, forKey: .director) ?? []
+        videos = ((try? c.decodeIfPresent([MetaVideo].self, forKey: .videos)) ?? []) ?? []
+    }
+
+    /// Episodes grouped by season, seasons in order, specials (season 0) last
+    /// — the order every streaming app's episode picker uses.
+    var seasons: [(season: Int, episodes: [MetaVideo])] {
+        let numbered = videos.filter { $0.season != nil && $0.episode != nil }
+        guard !numbered.isEmpty else { return [] }
+        return Dictionary(grouping: numbered) { $0.season ?? 0 }
+            .map { (season: $0.key, episodes: $0.value.sorted { ($0.episode ?? 0) < ($1.episode ?? 0) }) }
+            .sorted { lhs, rhs in
+                if lhs.season == 0 { return false }
+                if rhs.season == 0 { return true }
+                return lhs.season < rhs.season
+            }
+    }
+}
+
+/// One episode (or, for a movie, one entry) a `meta` response lists under
+/// `videos`. Series need this: a stream request for an episode is keyed by
+/// `tt123:1:4`, not by the series id.
+struct MetaVideo: Decodable, Identifiable, Equatable {
+    let id: String
+    let title: String?
+    let season: Int?
+    let episode: Int?
+    let released: String?
+    let thumbnail: String?
+    let overview: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, name, season, episode, number, released
+        case releaseDate = "firstAired"
+        case thumbnail, overview, description
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+            ?? c.decodeIfPresent(String.self, forKey: .name)
+        season = try c.decodeIfPresent(Int.self, forKey: .season)
+        episode = try c.decodeIfPresent(Int.self, forKey: .episode)
+            ?? c.decodeIfPresent(Int.self, forKey: .number)
+        released = try c.decodeIfPresent(String.self, forKey: .released)
+            ?? c.decodeIfPresent(String.self, forKey: .releaseDate)
+        thumbnail = try c.decodeIfPresent(String.self, forKey: .thumbnail)
+        overview = try c.decodeIfPresent(String.self, forKey: .overview)
+            ?? c.decodeIfPresent(String.self, forKey: .description)
+    }
+
+    /// `S01E04`, when the addon numbered it. Specials arrive as season 0.
+    var code: String? {
+        guard let season, let episode else { return nil }
+        return String(format: "S%02dE%02d", season, episode)
+    }
+
+    var displayTitle: String {
+        title?.trimmed.nilWhenEmpty ?? code ?? id
+    }
+}
+
+/// One playable — or at least offered — result from an addon's `stream`
+/// resource. Addons describe the same field in several ways, so the label a
+/// row shows is assembled rather than read from one key.
+struct Stream: Decodable, Identifiable, Equatable {
+    let url: String?
+    let externalURL: String?
+    let ytID: String?
+    let infoHash: String?
+    let name: String?
+    let title: String?
+    let description: String?
+    /// Headers the source insists on, and the filename it advertises — both
+    /// live under `behaviorHints`, and both decide whether a stream opens.
+    let behaviorHints: StreamBehaviorHints
+    /// Present when the addon returns no address of its own and expects the
+    /// client to ask the debrid service for the download itself. See
+    /// `StreamClientResolve` — this is the shape that cannot go stale, because
+    /// the address is minted at the moment of playing.
+    let clientResolve: StreamClientResolve?
+    /// Only set once a fan-out has attributed the result to an addon.
+    var addonName: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case url, name, title, description, behaviorHints, clientResolve
+        case externalURL = "externalUrl"
+        case ytID = "ytId"
+        case infoHash
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        url = try c.decodeIfPresent(String.self, forKey: .url)
+        externalURL = try c.decodeIfPresent(String.self, forKey: .externalURL)
+        ytID = try c.decodeIfPresent(String.self, forKey: .ytID)
+        infoHash = try c.decodeIfPresent(String.self, forKey: .infoHash)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        behaviorHints = (try? c.decodeIfPresent(StreamBehaviorHints.self, forKey: .behaviorHints))
+            .flatMap { $0 } ?? StreamBehaviorHints()
+        clientResolve = (try? c.decodeIfPresent(StreamClientResolve.self, forKey: .clientResolve))
+            .flatMap { $0 }
+    }
+
+    var id: String {
+        url
+            ?? externalURL
+            ?? infoHash
+            ?? ytID
+            ?? clientResolve?.infoHash
+            ?? "\(addonName)|\(name ?? "")|\(title ?? "")"
+    }
+
+    /// True when the addon gave no address but told the client how to ask for
+    /// one. Such a row is playable — it just costs a resolve first.
+    var needsResolve: Bool {
+        directURL == nil && (clientResolve?.isResolvable ?? false)
+    }
+
+    /// The direct address, if the stream has one AVFoundation could dial.
+    /// Whether it can *decode* what is on the other end is a separate
+    /// question — see `unsupportedContainer`.
+    var directURL: URL? {
+        guard let url = url?.trimmed, !url.isEmpty,
+              let parsed = URL(string: url),
+              let scheme = parsed.scheme?.lowercased(),
+              Self.playableSchemes.contains(scheme)
+        else { return nil }
+        return parsed
+    }
+
+    /// Everything libvlc can dial. Addons mostly return HTTP, but live
+    /// sources and IPTV lists routinely hand back RTSP, RTMP or a raw
+    /// multicast address, and the player opens all of them — so the picker
+    /// has no business refusing them on the way in.
+    ///
+    /// `magnet` is deliberately absent: libvlc has no torrent client, so a
+    /// magnet link is offered as a torrent result rather than a stream.
+    private static let playableSchemes: Set<String> = [
+        "http", "https",
+        "rtsp", "rtsps", "rtmp", "rtmpe", "rtmps", "rtp", "srt",
+        "mms", "mmsh", "mmst", "udp", "rtcp",
+        "hls", "dash", "ftp", "ftps", "sftp", "smb", "nfs", "file"
+    ]
+
+    /// Containers worth naming on a row. The player reads all of them — this
+    /// is a label, not a gate — but knowing a result is an MKV before opening
+    /// it is the kind of thing people choose a source on.
+    private static let knownContainers: Set<String> = [
+        "mkv", "mp4", "m4v", "mov", "avi", "webm", "ts", "m3u8", "flv", "wmv", "mpg", "mpeg"
+    ]
+
+    /// The container this result advertises, uppercased, when it names one.
+    var container: String? {
+        guard let hint = containerHint else { return nil }
+        return hint == "m3u8" ? "HLS" : hint.uppercased()
+    }
+
+    /// The filename an addon advertises is more reliable than the path, which
+    /// is often an opaque token on a debrid or proxy link.
+    private var containerHint: String? {
+        let candidates = [
+            behaviorHints.filename,
+            directURL?.lastPathComponent,
+            title?.split(separator: "\n").first.map(String.init),
+            name
+        ]
+        for candidate in candidates {
+            guard let value = candidate?.trimmed.lowercased(), !value.isEmpty else { continue }
+            let ext = (value as NSString).pathExtension
+            if Self.knownContainers.contains(ext) { return ext }
+        }
+        return nil
+    }
+
+    /// The address the picker hands to the player.
+    var playbackURL: URL? { directURL }
+
+    /// A link the system browser can take when the stream itself isn't
+    /// something AVPlayer can open.
+    var openableURL: URL? {
+        if let externalURL = externalURL?.trimmed, !externalURL.isEmpty,
+           let parsed = URL(string: externalURL), parsed.scheme != nil {
+            return parsed
+        }
+        if let ytID = ytID?.trimmed, !ytID.isEmpty {
+            return URL(string: "https://www.youtube.com/watch?v=\(ytID)")
+        }
+        return nil
+    }
+
+    var isPlayable: Bool { playbackURL != nil || needsResolve }
+
+    /// The bold line of a row. Addons put the quality either in `name` or in
+    /// the first line of `title`.
+    var headline: String {
+        let candidates = [name, title?.split(separator: "\n").first.map(String.init), description]
+        for candidate in candidates {
+            if let value = candidate?.trimmed.nilWhenEmpty { return value }
+        }
+        return addonName.nilWhenEmpty ?? "Stream"
+    }
+
+    /// The rest of `title` — size, seeds, release group — as one tidy line.
+    var detailLine: String? {
+        let body = (title ?? description)?
+            .split(separator: "\n")
+            .dropFirst(name == nil ? 1 : 0)
+            .map { String($0).trimmed }
+            .filter { !$0.isEmpty }
+            .joined(separator: "  ·  ")
+        return body?.nilWhenEmpty
+    }
+}
+
+/// The `behaviorHints` object. Only the parts that decide whether a stream
+/// opens: the headers a source requires, and the filename it advertises.
+struct StreamBehaviorHints: Decodable, Equatable {
+    var notWebReady: Bool = false
+    var filename: String?
+    /// Headers the source requires on the media request itself — a Referer or
+    /// User-Agent, most often. Sent without them, such a link answers 403 and
+    /// the player shows nothing.
+    var requestHeaders: [String: String] = [:]
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case notWebReady, filename, proxyHeaders, videoHash, bingeGroup
+    }
+
+    private struct ProxyHeaders: Decodable {
+        let request: [String: String]?
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        notWebReady = (try? c.decodeIfPresent(Bool.self, forKey: .notWebReady)) .flatMap { $0 } ?? false
+        filename = try? c.decodeIfPresent(String.self, forKey: .filename)
+        let proxy = (try? c.decodeIfPresent(ProxyHeaders.self, forKey: .proxyHeaders)).flatMap { $0 }
+        requestHeaders = proxy?.request ?? [:]
+    }
+}
+
+private struct StreamResponse: Decodable {
+    let streams: [Stream]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // One malformed entry shouldn't lose an addon's whole answer.
+        streams = (try c.decodeIfPresent([FailableStream].self, forKey: .streams) ?? [])
+            .compactMap(\.value)
+    }
+
+    enum CodingKeys: String, CodingKey { case streams }
+
+    private struct FailableStream: Decodable {
+        let value: Stream?
+        init(from decoder: Decoder) throws { value = try? Stream(from: decoder) }
     }
 }
 
@@ -334,6 +597,31 @@ struct AddonClient {
         return try await get(MetaResponse.self, url: Self.url(baseURL, path: path)).meta
     }
 
+    /// One addon's answer for a title or episode. `id` is the meta id for a
+    /// movie and the `series:season:episode` video id for an episode, which is
+    /// what the protocol keys episode streams by.
+    /// Stream results are the one response in this protocol that must never be
+    /// read from a cache.
+    ///
+    /// Addons routinely answer `/stream/` with a `Cache-Control: max-age`, and
+    /// `URLSession.shared` honours it — so a second ask inside that window
+    /// returns the first ask's answer without touching the network. For a
+    /// catalog that is a saving; for a list of signed, short-lived addresses it
+    /// means the app hands back the very links that have since expired, and a
+    /// re-request cannot produce anything the viewer doesn't already have.
+    ///
+    /// The addon is asked again for real: the stored response is ignored, and
+    /// `no-cache` tells anything in between to revalidate rather than serve its
+    /// own copy.
+    func streams(baseURL: String, type: String, id: String) async throws -> [Stream] {
+        let path = "/stream/\(Self.escape(type))/\(Self.escape(id)).json"
+        return try await get(
+            StreamResponse.self,
+            url: Self.url(baseURL, path: path),
+            cachePolicy: .reloadIgnoringLocalAndRemoteCacheData
+        ).streams
+    }
+
     /// Resolves a poster path that an addon gave relative to its own base.
     static func resolve(_ value: String?, relativeTo baseURL: String) -> URL? {
         guard let value, !value.isEmpty else { return nil }
@@ -363,12 +651,20 @@ struct AddonClient {
         return base + path + query
     }
 
-    private func get<T: Decodable>(_ type: T.Type, url: String) async throws -> T {
+    private func get<T: Decodable>(
+        _ type: T.Type,
+        url: String,
+        cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy
+    ) async throws -> T {
         guard let target = URL(string: url) else { throw AddonError.invalidURL(url) }
 
         var request = URLRequest(url: target)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 20
+        request.cachePolicy = cachePolicy
+        if cachePolicy == .reloadIgnoringLocalAndRemoteCacheData {
+            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        }
 
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {

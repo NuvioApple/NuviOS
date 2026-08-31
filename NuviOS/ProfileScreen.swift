@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || os(macOS) || os(tvOS)
 import SwiftUI
 
 /// The trailing tab: who is watching, and everything that belongs to them.
@@ -46,6 +46,9 @@ struct ProfileScreen: View {
                         trailers
                         account
                         server
+                        #if os(macOS)
+                        updates
+                        #endif
                         about
                     }
                     .padding(.horizontal, 20)
@@ -55,18 +58,28 @@ struct ProfileScreen: View {
             .navigationTitle("Profile")
             .scrollEdgeEffectStyle(.soft, for: .top)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .platformTopTrailing) {
                     Button("Edit profile", systemImage: "pencil") {
                         destination = .editor(profiles.current)
                     }
                 }
             }
             .sheet(item: $destination) { destination in
-                switch destination {
-                case .editor(let profile): ProfileEditor(profile: profile)
-                case .server: ServerView()
-                case .auth: AuthScreen()
+                Group {
+                    switch destination {
+                    case .editor(let profile): ProfileEditor(profile: profile)
+                    case .server: ServerView()
+                    // A remote can't type a password comfortably, so the TV
+                    // signs in the way it signs in from the welcome screen:
+                    // a code on screen and a phone to enter it on.
+                    #if os(tvOS)
+                    case .auth: SignInView()
+                    #else
+                    case .auth: AuthScreen()
+                    #endif
+                    }
                 }
+                .platformSheetSizing()
             }
         }
     }
@@ -216,7 +229,7 @@ struct ProfileScreen: View {
                 if tmdb.useTrailers {
                     SecureField("TMDB API key", text: $tmdb.apiKey)
                         .textFieldStyle(.plain)
-                        .textInputAutocapitalization(.never)
+                        .platformNoAutocapitalization()
                         .autocorrectionDisabled()
                         .font(.subheadline)
                         .foregroundStyle(.white)
@@ -290,6 +303,16 @@ struct ProfileScreen: View {
             }
         }
     }
+
+    #if os(macOS)
+    /// Only the Mac gets this. A sideloaded iOS or tvOS build can't replace
+    /// itself, so there would be nothing behind the button on those.
+    private var updates: some View {
+        Section(title: "Updates") {
+            SoftwareUpdateControls()
+        }
+    }
+    #endif
 
     private var about: some View {
         Text("Unofficial Apple client · not affiliated with NuvioMedia")
@@ -409,7 +432,7 @@ private struct ProfileEditor: View {
                 }
             }
             .navigationTitle(profile == nil ? "New profile" : "Edit profile")
-            .navigationBarTitleDisplayMode(.inline)
+            .platformInlineTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

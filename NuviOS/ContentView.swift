@@ -10,7 +10,14 @@ struct ContentView: View {
     @StateObject private var avatars = AvatarCatalog.shared
     @StateObject private var membership = MembershipStore()
     @StateObject private var tmdb = TmdbSettings.shared
+    /// The addon list the Play button fans its stream request out across.
+    @StateObject private var addons = AddonScope()
     @State private var didStart = false
+    #if os(macOS)
+    /// The Mac player is drawn here, at the root, rather than by the screen
+    /// that started it — see `PlayerPresenter`.
+    @StateObject private var player = PlayerPresenter.shared
+    #endif
 
     var body: some View {
         Group {
@@ -19,12 +26,16 @@ struct ContentView: View {
             } else {
                 switch session.state {
                 case .signedOut:
-                    // Phones get NuvioMobile's auth screen; the TV keeps the
-                    // focus-driven QR layout.
-                    #if os(iOS)
-                    AuthScreen()
-                    #else
+                    // Phones and Macs get NuvioMobile's email-and-password
+                    // auth screen; the TV keeps the focus-driven QR layout,
+                    // which exists because a remote can't type a password
+                    // comfortably. A Mac has a keyboard, so it signs in the way
+                    // the phone does. The TV can still reach the typed form
+                    // from the profile tab once it is inside.
+                    #if os(tvOS)
                     WelcomeView()
+                    #else
+                    AuthScreen()
                     #endif
                 case .guest:
                     shell("Browsing as a guest · sign in to sync your library")
@@ -33,17 +44,38 @@ struct ContentView: View {
                 }
             }
         }
+        #if os(macOS)
+        // Over the sidebar, the toolbar and the title bar: on a Mac the player
+        // owns the whole window, the way QuickTime and the TV app do.
+        .overlay {
+            if let request = player.request {
+                NuvioPlayerScreen(request: request)
+                    .environmentObject(session)
+                    .environment(\.platformCoverDismiss) { player.close() }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: player.request)
+        #endif
         .environmentObject(theme)
         .environmentObject(profiles)
         .environmentObject(library)
         .environmentObject(membership)
         .environmentObject(tmdb)
+        .environmentObject(addons)
         .environment(\.palette, theme.palette)
         .preferredColorScheme(.dark)
-        // The iOS build also runs in a resizable window on iPad and on Mac, so
-        // the layout metrics key off the window rather than off a guess at the
-        // device. Measured once, here, for every screen below.
-        #if os(iOS)
+        // The app also runs in a resizable window on iPad and on Mac, so
+        // the layout metrics key off the space a screen has rather than off a
+        // guess at the device. On iOS the destinations sit in a bar over the
+        // content, so the window is that space and one measurement here serves
+        // every screen. The Mac's sidebar makes the window wider than the
+        // column, so it measures inside the shell instead — see
+        // `measuringContentViewport`.
+        #if os(iOS) || os(tvOS)
         .measuringViewport()
         #endif
         .task {
@@ -62,6 +94,55 @@ struct ContentView: View {
             await membership.refresh(session: session)
             theme.reconcile(with: membership.access.entitlements)
         }
+        // Addons are profile-scoped, so the stream sources follow whoever is
+        // watching — and are re-read when the account itself changes.
+        .task(id: "\(sessionIdentity)|\(profiles.current.effectiveAddonProfileID)") {
+            await addons.refresh(session: session, profile: profiles.current, force: true)
+            // The debrid keys are profile-scoped in the same way, and are read
+            // off the account rather than typed in here: whatever the viewer
+            // set up on the TV app is what plays on this device.
+            await loadDebridCredentials()
+            await configureWatchProgressSync()
+        }
+    }
+
+    /// Reads the account's debrid keys, so a source that arrives as
+    /// instructions rather than an address can be resolved at press-time.
+    private func loadDebridCredentials() async {
+        guard case .signedIn = session.state,
+              let configuration = session.configuration,
+              let token = await session.validAccessToken()
+        else {
+            await DebridCredentials.shared.clear()
+            return
+        }
+        await DebridCredentials.shared.load(
+            configuration: configuration,
+            accessToken: token,
+            profileID: profiles.current.effectiveAddonProfileID,
+            identity: "\(sessionIdentity)|\(profiles.current.effectiveAddonProfileID)"
+        )
+    }
+
+    /// Hands the player's progress writer the account it should write to, so
+    /// what is watched here reaches the Continue Watching shelf everywhere.
+    private func configureWatchProgressSync() async {
+        guard case .signedIn = session.state,
+              let configuration = session.configuration,
+              let token = await session.validAccessToken()
+        else {
+            await WatchProgressSync.shared.configure(
+                configuration: nil,
+                accessToken: nil,
+                profileID: Profile.primaryIndex
+            )
+            return
+        }
+        await WatchProgressSync.shared.configure(
+            configuration: configuration,
+            accessToken: token,
+            profileID: profiles.current.effectiveAddonProfileID
+        )
     }
 
     /// Changes when the account does, so entitlements are re-read on sign-in
@@ -74,16 +155,13 @@ struct ContentView: View {
         }
     }
 
-    /// The signed-in shell. The phone gets the Liquid Glass tab bar with the
-    /// profile switcher in its trailing corner; the TV keeps its focus-driven
-    /// single-screen layout.
-    @ViewBuilder
+    /// The signed-in shell: Home, Movies, Series, Search and the profile, on
+    /// every platform. The phone hangs them off the Liquid Glass tab bar, the
+    /// Mac off a sidebar, and the TV off the focusable bar across the top —
+    /// but they are one set of screens, so a feature added anywhere shows up
+    /// everywhere.
     private func shell(_ subtitle: String) -> some View {
-        #if os(iOS)
         RootView(subtitle: subtitle)
-        #else
-        HomeView(subtitle: subtitle)
-        #endif
     }
 }
 
@@ -182,12 +260,12 @@ struct WelcomeView: View {
                 .padding(.horizontal, metrics.pagePadding)
             }
         }
-        .fullScreenCover(isPresented: $showingSignIn) {
+        .platformFullScreenCover(isPresented: $showingSignIn) {
             SignInView()
                 .environmentObject(theme)
                 .environment(\.palette, theme.palette)
         }
-        .fullScreenCover(isPresented: $showingServer) {
+        .platformFullScreenCover(isPresented: $showingServer) {
             ServerView()
                 .environmentObject(theme)
                 .environment(\.palette, theme.palette)

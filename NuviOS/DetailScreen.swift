@@ -10,6 +10,7 @@ struct MetaDetailView: View {
 
     @State private var detail: MetaDetail?
     @State private var failed = false
+    @State private var isPickingStream = false
 
     private var item: MetaItem { selection.item }
 
@@ -56,6 +57,9 @@ struct MetaDetailView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .platformFullScreenCover(isPresented: $isPickingStream) {
+            StreamPicker(selection: selection, detail: detail)
+        }
         #if os(tvOS)
         .onExitCommand { dismiss() }
         #endif
@@ -164,18 +168,18 @@ struct MetaDetailView: View {
     private func actions(_ metrics: LayoutMetrics) -> some View {
         VStack(alignment: .leading, spacing: metrics.isCompact ? 10 : 16) {
             HStack(spacing: metrics.isCompact ? 12 : 20) {
-                // Playback isn't ported yet, so the primary action is honest
-                // about what it does rather than showing a Play button that
-                // can't play anything.
+                Button(detail?.seasons.isEmpty == false ? "Episodes" : "Play") {
+                    isPickingStream = true
+                }
+                .buttonStyle(
+                    NuvioButtonStyle(kind: .prominent, icon: "play.fill", compact: metrics.isCompact)
+                )
+
                 Button("Back to browsing") { dismiss() }
                     .buttonStyle(
-                        NuvioButtonStyle(kind: .prominent, icon: "chevron.left", compact: metrics.isCompact)
+                        NuvioButtonStyle(kind: .glass, icon: "chevron.left", compact: metrics.isCompact)
                     )
             }
-
-            Label("Playback isn't available in this build yet", systemImage: "play.slash.fill")
-                .font(.system(size: metrics.isCompact ? 12 : 18, weight: .medium))
-                .foregroundStyle(.white.opacity(0.45))
         }
     }
 

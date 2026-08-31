@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import SwiftUI
 
 /// Palette lifted from NuvioMobile's AuthScreen.kt so the iOS build reads as
@@ -59,7 +59,7 @@ struct AuthScreen: View {
         .foregroundStyle(AuthPalette.textPrimary)
         .onTapGesture { focused = nil }
         .onDisappear { session.cancelDeviceLink() }
-        .fullScreenCover(isPresented: $showingServer) { ServerView() }
+        .platformFullScreenCover(isPresented: $showingServer) { ServerView() }
     }
 
     // MARK: Pieces
@@ -101,8 +101,10 @@ struct AuthScreen: View {
             )
             .focused($focused, equals: .email)
             .textContentType(.emailAddress)
+            #if os(iOS)
             .keyboardType(.emailAddress)
             .textInputAutocapitalization(.never)
+            #endif
             .autocorrectionDisabled()
             .submitLabel(.next)
             .onSubmit { focused = .password }
@@ -236,7 +238,13 @@ struct AuthScreen: View {
         Task { await session.submit(email: email, password: password, isSignUp: isSignUp) }
     }
 
-    private static var deviceName: String { UIDevice.current.name }
+    private static var deviceName: String {
+        #if os(macOS)
+        Host.current().localizedName ?? "Mac"
+        #else
+        UIDevice.current.name
+        #endif
+    }
 }
 
 // MARK: - Controls

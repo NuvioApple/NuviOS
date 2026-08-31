@@ -1,0 +1,60 @@
+{
+  "originHash" : "d77e2e3ab711d6f80fdc44a79ab375eec96a865630329ce1fdad35591a07a2b4",
+  "pins" : [
+    {
+      "identity" : "aetherengine",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/superuser404notfound/AetherEngine",
+      "state" : {
+        "revision" : "dd99bf4a1441b08b998801d3aab27bf3f6779745",
+        "version" : "6.57.1"
+      }
+    },
+    {
+      "identity" : "ffmpegbuild",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/superuser404notfound/FFmpegBuild",
+      "state" : {
+        "revision" : "421e13be7061de67d91b85ac34a6b22a002b164f",
+        "version" : "3.0.0"
+      }
+    },
+    {
+      "identity" : "libdovi",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/superuser404notfound/LibDovi",
+      "state" : {
+        "revision" : "0d7cce1d6836a30d13a3a2326e50a153af53f014",
+        "version" : "2.1.0"
+      }
+    },
+    {
+      "identity" : "smbclient",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kishikawakatsumi/SMBClient",
+      "state" : {
+        "revision" : "e636c2b2458930770932a36d311ec9d478575b90",
+        "version" : "0.3.1"
+      }
+    },
+    {
+      "identity" : "sparkle",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/sparkle-project/Sparkle",
+      "state" : {
+        "revision" : "ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a",
+        "version" : "2.9.6"
+      }
+    },
+    {
+      "identity" : "vlckit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/videolan/vlckit",
+      "state" : {
+        "revision" : "e3774eb25c62c902e9066ba267e6416d82e83382",
+        "version" : "4.0.0-a23"
+      }
+    }
+  ],
+  "version" : 3
+}

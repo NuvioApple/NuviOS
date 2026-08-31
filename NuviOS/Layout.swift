@@ -36,7 +36,11 @@ struct LayoutMetrics: Equatable {
 
     // MARK: Page
 
+    #if os(tvOS)
+    var pagePadding: CGFloat { lerp(22, 92) }
+    #else
     var pagePadding: CGFloat { lerp(22, 80) }
+    #endif
     var sectionSpacing: CGFloat { lerp(28, 44) }
     var stackSpacing: CGFloat { lerp(14, 24) }
 
@@ -69,27 +73,46 @@ struct LayoutMetrics: Equatable {
     /// is what made the hero overflow a part-screen Mac window.
     var heroHeight: CGFloat {
         let base = height > 0 ? height : width * 9 / 16
+        #if os(tvOS)
+        // A television opens on one frame. The hero takes nearly the whole
+        // screen and the first shelf only crests the bottom edge, so the app
+        // reads as artwork first and as a menu second.
+        let ideal = base * lerp(0.62, 0.90)
+        let ceiling = height > 0 ? height * 0.93 : lerp(620, 1010)
+        #else
         let ideal = base * lerp(0.62, 0.72)
         let ceiling = height > 0 ? min(height * 0.86, lerp(620, 900)) : lerp(620, 900)
+        #endif
         return min(max(ideal, min(lerp(330, 520), ceiling)), ceiling)
     }
 
+    #if os(tvOS)
+    var heroTitleSize: CGFloat { lerp(34, 104) }
+    var heroLogoMaxWidth: CGFloat { min(width * lerp(0.7, 0.40), lerp(280, 780)) }
+    var heroLogoMaxHeight: CGFloat { lerp(90, 270) }
+    #else
     var heroTitleSize: CGFloat { lerp(34, 74) }
     var heroLogoMaxWidth: CGFloat { min(width * lerp(0.7, 0.34), lerp(280, 620)) }
     var heroLogoMaxHeight: CGFloat { lerp(90, 200) }
+    #endif
+
     var heroContentWidth: CGFloat {
         min(width - pagePadding * 2, max(width * lerp(1, 0.46), lerp(320, 980)))
     }
 
     // MARK: Catalog rows
 
+    #if os(tvOS)
+    var rowSpacing: CGFloat { lerp(28, 56) }
+    #else
     var rowSpacing: CGFloat { lerp(28, 46) }
-    var rowTitleSize: CGFloat { lerp(19, 31) }
+    #endif
+    var rowTitleSize: CGFloat { lerp(19, 29) }
 
-    var posterWidth: CGFloat { lerp(118, 232).rounded() }
+    var posterWidth: CGFloat { lerp(118, 244).rounded() }
     var posterHeight: CGFloat { (posterWidth * 3 / 2).rounded() }
     var posterSpacing: CGFloat { lerp(12, 30) }
-    var posterCornerRadius: CGFloat { lerp(10, 16) }
+    var posterCornerRadius: CGFloat { lerp(10, 14) }
 
     /// tvOS grows the focused card, so a row needs slack around it — otherwise
     /// the grown card is clipped by the scroll view.

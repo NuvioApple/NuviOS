@@ -1,0 +1,4 @@
+# Build products. The DMG goes to the GitHub release, not into the repo;
+# only appcast.xml is committed, because that is what SUFeedURL serves.
+build/
+*.dmg

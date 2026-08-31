@@ -23,4 +23,5 @@ struct MetaSelection: Identifiable, Equatable, Hashable {
 
 extension String {
     var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+    var nilWhenEmpty: String? { isEmpty ? nil : self }
 }

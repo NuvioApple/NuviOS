@@ -185,7 +185,7 @@ struct SignInView: View {
     @ViewBuilder
     private func qrCode(webURL: String, metrics: LayoutMetrics) -> some View {
         if let qr = Self.qrImage(from: webURL) {
-            Image(uiImage: qr)
+            Image(platformImage: qr)
                 .interpolation(.none)
                 .resizable()
                 .frame(width: metrics.qrSize, height: metrics.qrSize)
@@ -205,6 +205,8 @@ struct SignInView: View {
     private static var deviceName: String {
         #if os(tvOS)
         "Apple TV"
+        #elseif os(macOS)
+        Host.current().localizedName ?? "Mac"
         #else
         "iPhone"
         #endif
@@ -225,7 +227,7 @@ struct SignInView: View {
 
     /// The verification URL as a scannable QR, scaled up from the filter's
     /// tiny native output so it stays crisp at any size.
-    static func qrImage(from string: String) -> UIImage? {
+    static func qrImage(from string: String) -> PlatformImage? {
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(string.utf8)
         filter.correctionLevel = "M"
@@ -237,6 +239,10 @@ struct SignInView: View {
         guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else {
             return nil
         }
+        #if os(macOS)
+        return NSImage(cgImage: cgImage, size: scaled.extent.size)
+        #else
         return UIImage(cgImage: cgImage)
+        #endif
     }
 }

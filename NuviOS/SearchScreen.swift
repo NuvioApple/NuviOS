@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || os(macOS) || os(tvOS)
 import SwiftUI
 import Combine
 
@@ -135,11 +135,18 @@ struct SearchScreen: View {
             }
             .navigationTitle("Search")
             .scrollEdgeEffectStyle(.soft, for: .top)
+            // `navigationBarDrawer` is an iOS placement. macOS puts the field
+            // in the toolbar and tvOS gives search its own focusable keyboard
+            // screen; `.automatic` is right on both.
+            #if !os(iOS)
+            .searchable(text: $query, prompt: "Movies, series, people")
+            #else
             .searchable(
                 text: $query,
                 placement: .navigationBarDrawer(displayMode: .always),
                 prompt: "Movies, series, people"
             )
+            #endif
             .onChange(of: query) { _, new in
                 search.search(new, sources: model.searchSources)
             }

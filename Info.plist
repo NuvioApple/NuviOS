@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<!-- Sparkle, macOS only. The other platforms ignore these keys. -->
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/NuvioApple/NuviOS/main/distribution/appcast.xml</string>
+	<!-- The public half of the EdDSA pair from Sparkle's generate_keys. The
+	     private half lives in the login keychain of whoever cuts releases and
+	     is never committed; see distribution/README.md. -->
+	<key>SUPublicEDKey</key>
+	<string>2dlMo/jfxlp4u2SCjy5HqVFfjfHty8+milnNEggaONk=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+</dict>
+</plist>

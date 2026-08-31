@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || os(macOS) || os(tvOS)
 import SwiftUI
 import Combine
 
@@ -27,6 +27,12 @@ struct BrowseScreen: View {
     @State private var genre: String?
 
     private var hasBillboard: Bool { showsHero && !model.heroItems.isEmpty }
+
+    /// The TV hero is laid out in `LayoutMetrics`, which are derived from the
+    /// space a screen actually has — the same measurement `Phone` reads.
+    private var heroMetrics: LayoutMetrics {
+        LayoutMetrics(width: Phone.width, height: Phone.height)
+    }
 
     private var rows: [CatalogRow] {
         model.rows(matching: filter).map { row in
@@ -75,7 +81,7 @@ struct BrowseScreen: View {
 
                 topBar
             }
-            .toolbar(.hidden, for: .navigationBar)
+            .platformHiddenNavigationBar()
             .navigationDestination(item: $selected) { selection in
                 DetailView(selection: selection)
             }
@@ -112,10 +118,21 @@ struct BrowseScreen: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Phone.shelfSpacing) {
                 if hasBillboard {
+                    // Same feature, two shapes. A thumb gets the paging
+                    // billboard with its muted trailer; a remote gets the
+                    // Ken Burns carousel, whose controls are focusable —
+                    // a swipe-paged hero would trap focus on a television.
+                    #if os(tvOS)
+                    HeroCarousel(items: model.heroItems, metrics: heroMetrics) { hero in
+                        selected = MetaSelection(item: hero.item, addonBaseURL: hero.addonBaseURL)
+                    }
+                    .padding(.bottom, 2)
+                    #else
                     Billboard(items: model.heroItems, isOnScreen: scrollProgress < 0.4) { hero in
                         selected = MetaSelection(item: hero.item, addonBaseURL: hero.addonBaseURL)
                     }
                     .padding(.bottom, 2)
+                    #endif
                 } else {
                     // Clears the floating bar, which is opaque on these tabs.
                     Color.clear.frame(height: 40)
@@ -123,6 +140,23 @@ struct BrowseScreen: View {
 
                 if !showsHero, !genres.isEmpty {
                     GenreBar(genres: genres, selection: $genre)
+                }
+
+                // Where the viewer got to comes first: it is the row most
+                // likely to be what they opened the app for.
+                if showsHero, !model.continueWatching.isEmpty {
+                    Shelf(title: "Continue Watching", items: model.continueWatching) { resume, _ in
+                        ContinueWatchingCard(
+                            item: resume,
+                            width: (Phone.posterWidth * 1.62).rounded(),
+                            cornerRadius: Phone.posterRadius
+                        ) {
+                            selected = MetaSelection(
+                                item: resume.item,
+                                addonBaseURL: resume.addonBaseURL
+                            )
+                        }
+                    }
                 }
 
                 if showsHero, !library.titles.isEmpty {
@@ -157,6 +191,11 @@ struct BrowseScreen: View {
         .scrollIndicators(.hidden)
         .trackingScrollProgress(over: 220, into: $scrollProgress)
         .refreshable { await model.refresh(session: session, profile: profiles.current) }
+        // Coming back from a title is exactly when the shelf is out of date.
+        .onChange(of: selected == nil) { _, dismissed in
+            guard dismissed else { return }
+            model.refreshContinueWatching(session: session, profile: profiles.current)
+        }
     }
 
     private var myList: some View {
@@ -278,20 +317,49 @@ private struct Billboard: View {
 
     private let advance = Timer.publish(every: 7, on: .main, in: .common).autoconnect()
 
-    var body: some View {
-        TabView(selection: $index) {
+    /// The hero pager.
+    ///
+    /// iOS and tvOS get a real paged `TabView`, which is what the style was
+    /// written for. On the Mac there is no paged style, and a plain `TabView`
+    /// there is not a pager at all but a tabbed *interface*: it draws a row of
+    /// tab buttons above its content. These pages are tagged by index and have
+    /// no labels to put in that row, so it came out as an empty capsule
+    /// floating over the artwork — on top of the app's own dots, which already
+    /// say the same thing. The Mac shows the current hero directly instead.
+    @ViewBuilder
+    private var pages: some View {
+        #if os(macOS)
+        ZStack {
             ForEach(Array(items.enumerated()), id: \.element.id) { offset, hero in
-                BillboardPage(
-                    hero: hero,
-                    isCurrent: offset == index && isOnScreen,
-                    onTrailerChange: { isPlaying in
-                        trailerIndex = isPlaying ? offset : (trailerIndex == offset ? nil : trailerIndex)
-                    }
-                ) { onSelect(hero) }
-                    .tag(offset)
+                if offset == index {
+                    page(offset: offset, hero: hero)
+                        .transition(.opacity)
+                }
             }
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
+        .animation(.easeInOut(duration: 0.45), value: index)
+        #else
+        TabView(selection: $index) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { offset, hero in
+                page(offset: offset, hero: hero).tag(offset)
+            }
+        }
+        .platformPagedTabViewStyle()
+        #endif
+    }
+
+    private func page(offset: Int, hero: HeroItem) -> some View {
+        BillboardPage(
+            hero: hero,
+            isCurrent: offset == index && isOnScreen,
+            onTrailerChange: { isPlaying in
+                trailerIndex = isPlaying ? offset : (trailerIndex == offset ? nil : trailerIndex)
+            }
+        ) { onSelect(hero) }
+    }
+
+    var body: some View {
+        pages
         // Sized against the window, not just its width. A pure aspect ratio
         // fills the top of an iPhone nicely and then runs several screenfuls
         // deep in a wide, short Mac window; `billboardHeight` takes the
@@ -318,9 +386,13 @@ private struct Billboard: View {
                 index = (index + 1) % items.count
             }
         }
+        // A finger on the artwork stops the rotation until it lets go. A
+        // remote has no drag to offer, and `DragGesture` doesn't exist there.
+        #if !os(tvOS)
         .simultaneousGesture(
             DragGesture(minimumDistance: 4).onChanged { _ in isInteracting = true }
         )
+        #endif
     }
 }
 
@@ -391,6 +463,9 @@ private struct BillboardPage: View {
             RemoteImage(url: backdropURL)
                 .opacity(isTrailerVisible ? 0 : 1)
 
+            // The YouTube embed rides on a UIKit helper, so autoplaying
+            // trailers are iOS-only for now; macOS shows the backdrop.
+            #if os(iOS)
             if let youTubeKey {
                 YouTubeTrailerView(
                     videoID: youTubeKey,
@@ -408,6 +483,7 @@ private struct BillboardPage: View {
                 .aspectRatio(16 / 9, contentMode: .fill)
                 .allowsHitTesting(false)
             }
+            #endif
 
             // Two stops: one that keeps the type legible, one that melts the
             // artwork into the page rather than ending on a hard edge.
@@ -453,6 +529,12 @@ private struct BillboardPage: View {
     }
 
     private func manageTrailer() async {
+        // Trailer playback rides on a WebKit YouTube embed, which neither
+        // macOS's player path nor tvOS (which has no WebKit at all) can use,
+        // so there is nothing to manage off iOS.
+        #if !os(iOS)
+        return
+        #else
         guard isCurrent, scenePhase == .active, tmdb.canFetchTrailers else {
             stopTrailer()
             return
@@ -486,6 +568,7 @@ private struct BillboardPage: View {
         try? await Task.sleep(for: .seconds(8))
         guard !Task.isCancelled, !isTrailerVisible else { return }
         stopTrailer()
+        #endif
     }
 
     private func stopTrailer() {
@@ -572,20 +655,8 @@ private struct BillboardPage: View {
             }
             .buttonStyle(.glassProminent)
             .tint(palette.accent)
-            .foregroundStyle(palette.onAccent)
 
-            ShareLink(item: shareText) {
-                VStack(spacing: 3) {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 20, weight: .semibold))
-                        .frame(height: 22)
-                    Text("Share")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .foregroundStyle(.white.opacity(0.9))
-                .frame(width: 62)
-            }
-            .buttonStyle(.pressable)
+            PlatformShareButton(text: shareText, width: 62)
         }
     }
 }

@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || os(macOS) || os(tvOS)
 import Observation
 import SwiftUI
 
@@ -19,7 +19,7 @@ final class Viewport {
 }
 
 extension View {
-    /// Feeds the window's size to `Phone`. Applied once, at the root.
+    /// Feeds the size of the space a screen actually gets to `Phone`.
     func measuringViewport() -> some View {
         onGeometryChange(for: CGSize.self) { proxy in
             proxy.size
@@ -27,6 +27,22 @@ extension View {
             guard new.width > 1, new.height > 1, new != Viewport.shared.size else { return }
             Viewport.shared.size = new
         }
+    }
+
+    /// The Mac shell keeps its destinations in a sidebar, so the window is
+    /// wider than the column a screen is drawn in. Measured at the window, the
+    /// billboard and the shelves are sized for room they do not have — the
+    /// hero comes out taller than its column and the artwork is cropped to a
+    /// black band. The Mac measures the content column instead; the phone and
+    /// the iPad have their destinations in a bar over the content, where the
+    /// window and the column are the same width, and keep measuring the root.
+    @ViewBuilder
+    func measuringContentViewport() -> some View {
+        #if os(macOS)
+        measuringViewport()
+        #else
+        self
+        #endif
     }
 }
 
@@ -50,8 +66,16 @@ enum Phone {
     static var posterSpacing: CGFloat { (10 * scale).rounded() }
     static var shelfSpacing: CGFloat { (26 * scale).rounded() }
     /// Clears the floating glass tab bar so the last row stays reachable. The
-    /// bar barely grows with the window, so neither does this.
-    static var tabBarClearance: CGFloat { (64 * min(scale, 1.3)).rounded() }
+    /// bar barely grows with the window, so neither does this. The Mac's
+    /// destinations live in a sidebar instead, so nothing overlaps the bottom
+    /// of the window there and only ordinary breathing room is needed.
+    static var tabBarClearance: CGFloat {
+        #if os(macOS)
+        (24 * min(scale, 1.3)).rounded()
+        #else
+        (64 * min(scale, 1.3)).rounded()
+        #endif
+    }
 
     // MARK: Billboard
 
@@ -107,18 +131,45 @@ enum Phone {
 
 /// Shrinks a card while it's held, the way every streaming app answers a tap
 /// on artwork. Replaces `.buttonStyle(.plain)`, which gives no feedback at all.
+///
+/// On a television there is no press to answer, there is focus — and focus
+/// with no visible answer is an unusable screen, because the viewer cannot
+/// see where the remote is pointing. So the same style lifts the control when
+/// it takes focus, and every `.pressable` call site in the app gains the
+/// television's affordance without being touched.
 struct PressableStyle: ButtonStyle {
     var scale: CGFloat = 0.94
+    /// How much the control grows on focus. Cards pass a larger value; small
+    /// controls keep the default, which is about as much as a capsule can
+    /// grow without colliding with its neighbours.
+    var focusScale: CGFloat = 1.08
 
     func makeBody(configuration: Configuration) -> some View {
+        #if os(tvOS)
+        FocusReader { isFocused in
+            configuration.label
+                .scaleEffect(configuration.isPressed ? scale : (isFocused ? focusScale : 1))
+                .brightness(isFocused ? 0.08 : 0)
+                .zIndex(isFocused ? 1 : 0)
+                .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 24, y: 12)
+                .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)
+                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+        }
+        #else
         configuration.label
             .scaleEffect(configuration.isPressed ? scale : 1)
             .animation(.spring(response: 0.28, dampingFraction: 0.7), value: configuration.isPressed)
+        #endif
     }
 }
 
 extension ButtonStyle where Self == PressableStyle {
     static var pressable: PressableStyle { PressableStyle() }
+
+    /// For artwork: a smaller press, a bigger focus lift.
+    static var pressableCard: PressableStyle {
+        PressableStyle(scale: 0.97, focusScale: 1.10)
+    }
 }
 
 // MARK: - Posters
@@ -141,15 +192,60 @@ struct PosterCard: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(alignment: .bottom, spacing: rank == nil ? 0 : -width * 0.34) {
-                if let rank {
-                    RankNumeral(rank: rank, height: height)
+            // The card reads its own focus so the television gets the frame
+            // and the caption it needs, and the phone — which never focuses —
+            // keeps exactly the card it had.
+            FocusReader { isFocused in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .bottom, spacing: rank == nil ? 0 : -width * 0.34) {
+                        if let rank {
+                            RankNumeral(rank: rank, height: height)
+                        }
+                        poster
+                            .overlay {
+                                RoundedRectangle(
+                                    cornerRadius: Phone.posterRadius,
+                                    style: .continuous
+                                )
+                                .strokeBorder(.white.opacity(isFocused ? 1 : 0), lineWidth: 4)
+                            }
+                    }
+
+                    caption(isFocused: isFocused)
                 }
-                poster
             }
         }
-        .buttonStyle(.pressable)
+        .buttonStyle(.pressableCard)
         .accessibilityLabel(rank.map { "\(item.name), number \($0)" } ?? item.name)
+    }
+
+    /// The title under the artwork. A phone lets the poster speak for itself —
+    /// a caption under every card turns a row into a table — but across a room
+    /// a poster is too small to read, so the focused card, and only the
+    /// focused card, says what it is. The space is reserved either way so the
+    /// shelf doesn't jump as focus moves along it.
+    @ViewBuilder
+    private func caption(isFocused: Bool) -> some View {
+        #if os(tvOS)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(item.name)
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+
+            if let year = item.releaseInfo?.trimmed, !year.isEmpty {
+                Text(year)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: width, alignment: .leading)
+        .frame(height: 46, alignment: .top)
+        .opacity(isFocused ? 1 : 0)
+        #else
+        EmptyView()
+        #endif
     }
 
     private var poster: some View {

@@ -3,12 +3,12 @@
     <channel>
         <title>NuviOS</title>
         <item>
-            <title>1.0</title>
-            <pubDate>Mon, 31 Aug 2026 18:28:45 +0200</pubDate>
-            <sparkle:version>1</sparkle:version>
-            <sparkle:shortVersionString>1.0</sparkle:shortVersionString>
+            <title>1.1</title>
+            <pubDate>Mon, 31 Aug 2026 19:01:02 +0200</pubDate>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>1.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/NuvioApple/NuviOS/releases/download/v1.0/NuvioOS-1.0.dmg" length="71601928" type="application/octet-stream" sparkle:edSignature="etAsfKzVZLQ4y8q1zKUgIui8eSJ3XRBYlPt92Mj01zRRKLlV4sdl59jODAuAiaSDFDhZnFzJEKSdPzAja6bnDw=="/>
+            <enclosure url="https://github.com/NuvioApple/NuviOS/releases/download/v1.1/NuvioOS-1.1.dmg" length="72483204" type="application/octet-stream" sparkle:edSignature="D9xIF22nGB1/r14STSW/X0RFFglQK9qeOqdT8jDC+SYTF5wKp13AoWofrEYOPth3Agqtjq4bpLbcGAvlxcNBDw=="/>
         </item>
     </channel>
 </rss>

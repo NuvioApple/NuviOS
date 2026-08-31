@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import SwiftUI
 import Combine
 import WebKit
@@ -197,6 +197,7 @@ actor TrailerService {
 /// WKWebView-over-the-IFrame-API shape this file used to hand-roll, but the
 /// bridge, the origin handling and the state parsing are Google's rather than
 /// ours.
+#if os(iOS)
 struct YouTubeTrailerView: UIViewRepresentable {
     let videoID: String
     var isMuted: Bool
@@ -310,4 +311,148 @@ struct YouTubeTrailerView: UIViewRepresentable {
         }
     }
 }
+#else
+
+/// The Mac's trailer player.
+///
+/// Google's `YTPlayerView` helper is UIKit-only — the project excludes it
+/// from the macOS build — so the Mac talks to the same IFrame API through a
+/// `WKWebView` of its own. Same contract as the iOS view above: chromeless,
+/// muted, autoplaying, reporting back when it actually starts.
+struct YouTubeTrailerView: NSViewRepresentable {
+    let videoID: String
+    var isMuted: Bool
+    var onReady: () -> Void
+    var onEnded: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onReady: onReady, onEnded: onEnded)
+    }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        // Without this the embed refuses to start on its own and the
+        // billboard sits on a black rectangle waiting for a click it will
+        // never get, because the player takes no hits.
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.userContentController.add(context.coordinator, name: "state")
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+        webView.setValue(false, forKey: "drawsBackground")
+        // The billboard owns the controls; the trailer is a backdrop.
+        webView.allowsBackForwardNavigationGestures = false
+        context.coordinator.load(videoID, into: webView)
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.onReady = onReady
+        context.coordinator.onEnded = onEnded
+        context.coordinator.load(videoID, into: webView)
+        context.coordinator.apply(isMuted: isMuted, to: webView)
+    }
+
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        // Without this the embed keeps playing audio after the view is gone.
+        webView.evaluateJavaScript("player && player.stopVideo();")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "state")
+        webView.loadHTMLString("", baseURL: nil)
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        var onReady: () -> Void
+        var onEnded: () -> Void
+
+        private var loadedVideoID: String?
+        private var hasStarted = false
+        private var lastMuted = true
+
+        init(onReady: @escaping () -> Void, onEnded: @escaping () -> Void) {
+            self.onReady = onReady
+            self.onEnded = onEnded
+        }
+
+        func load(_ videoID: String, into webView: WKWebView) {
+            guard loadedVideoID != videoID else { return }
+            loadedVideoID = videoID
+            hasStarted = false
+            lastMuted = true
+            // A real origin is required: the IFrame API refuses to run from
+            // an opaque `about:blank` page.
+            webView.loadHTMLString(Self.html(for: videoID), baseURL: URL(string: "https://www.youtube.com"))
+        }
+
+        func apply(isMuted: Bool, to webView: WKWebView) {
+            guard hasStarted, isMuted != lastMuted else { return }
+            lastMuted = isMuted
+            webView.evaluateJavaScript(
+                isMuted ? "player.mute();" : "player.unMute(); player.setVolume(100);"
+            )
+        }
+
+        func userContentController(
+            _ controller: WKUserContentController,
+            didReceive message: WKScriptMessage
+        ) {
+            switch message.body as? String {
+            case "playing":
+                guard !hasStarted else { return }
+                hasStarted = true
+                onReady()
+            // `error` covers the age-gated, region-blocked and
+            // embedding-disabled videos, which must release the carousel
+            // rather than hold it on a black frame.
+            case "ended", "error":
+                onEnded()
+            default:
+                break
+            }
+        }
+
+        private static func html(for videoID: String) -> String {
+            // The id is interpolated into JS, so anything that could close the
+            // string literal is dropped. YouTube ids are [A-Za-z0-9_-] anyway.
+            let safeID = videoID.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
+            return """
+            <!doctype html>
+            <html>
+              <head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+              <body style="margin:0;background:#000;overflow:hidden">
+                <div id="player"></div>
+                <script src="https://www.youtube.com/iframe_api"></script>
+                <script>
+                  var player;
+                  function post(value) {
+                    window.webkit.messageHandlers.state.postMessage(value);
+                  }
+                  function onYouTubeIframeAPIReady() {
+                    player = new YT.Player('player', {
+                      videoId: '\(safeID)',
+                      playerVars: {
+                        autoplay: 1, mute: 1, controls: 0, playsinline: 1,
+                        rel: 0, modestbranding: 1, iv_load_policy: 3,
+                        fs: 0, disablekb: 1
+                      },
+                      events: {
+                        onReady: function (e) { e.target.mute(); e.target.playVideo(); },
+                        onStateChange: function (e) {
+                          if (e.data === YT.PlayerState.PLAYING) post('playing');
+                          if (e.data === YT.PlayerState.ENDED) post('ended');
+                        },
+                        onError: function () { post('error'); }
+                      }
+                    });
+                  }
+                </script>
+                <style>
+                  html, body, #player, iframe { width: 100%; height: 100%; border: 0; }
+                </style>
+              </body>
+            </html>
+            """
+        }
+    }
+}
+#endif
 #endif

@@ -463,9 +463,8 @@ private struct BillboardPage: View {
             RemoteImage(url: backdropURL)
                 .opacity(isTrailerVisible ? 0 : 1)
 
-            // The YouTube embed rides on a UIKit helper, so autoplaying
-            // trailers are iOS-only for now; macOS shows the backdrop.
-            #if os(iOS)
+            // tvOS has no WebKit, so the TV keeps the still backdrop.
+            #if os(iOS) || os(macOS)
             if let youTubeKey {
                 YouTubeTrailerView(
                     videoID: youTubeKey,
@@ -529,10 +528,9 @@ private struct BillboardPage: View {
     }
 
     private func manageTrailer() async {
-        // Trailer playback rides on a WebKit YouTube embed, which neither
-        // macOS's player path nor tvOS (which has no WebKit at all) can use,
-        // so there is nothing to manage off iOS.
-        #if !os(iOS)
+        // Trailer playback rides on a WebKit YouTube embed, and tvOS has no
+        // WebKit at all, so there is nothing to manage there.
+        #if os(tvOS)
         return
         #else
         guard isCurrent, scenePhase == .active, tmdb.canFetchTrailers else {

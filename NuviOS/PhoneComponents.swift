@@ -189,6 +189,16 @@ struct PosterCard: View {
     let action: () -> Void
 
     private var height: CGFloat { (width * 3 / 2).rounded() }
+    /// The hovered card keeps the poster's height and widens to 16:9, so a
+    /// shelf stays one consistent height whatever the pointer is over.
+    private var landscapeWidth: CGFloat { (height * 16 / 9).rounded() }
+
+    #if os(macOS)
+    /// The Mac is the only platform with a pointer, so it is the only one that
+    /// can have a hover state at all. The phone has no hover and the TV moves
+    /// by focus, which already has its own treatment.
+    @State private var isHovering = false
+    #endif
 
     var body: some View {
         Button(action: action) {
@@ -248,11 +258,36 @@ struct PosterCard: View {
         #endif
     }
 
+    /// Hovering swaps the portrait poster for the title's landscape backdrop,
+    /// the way the TV app turns a tile over under the pointer.
+    ///
+    /// The card grows sideways rather than in both directions: it holds the
+    /// poster's height and widens to 16:9, so the shelf stays exactly as tall
+    /// as it was and the neighbouring cards slide aside to make the room.
+    /// Titles whose addon sends no backdrop keep the poster and simply crop to
+    /// the wider shape rather than popping to a grey well.
+    private var artworkURL: URL? {
+        #if os(macOS)
+        if isHovering, let background = item.background?.trimmed, !background.isEmpty {
+            return AddonClient.resolve(background, relativeTo: addonBaseURL)
+        }
+        #endif
+        return AddonClient.resolve(item.poster, relativeTo: addonBaseURL)
+    }
+
+    private var artworkWidth: CGFloat {
+        #if os(macOS)
+        isHovering ? landscapeWidth : width
+        #else
+        width
+        #endif
+    }
+
     private var poster: some View {
-        RemoteImage(url: AddonClient.resolve(item.poster, relativeTo: addonBaseURL)) {
+        RemoteImage(url: artworkURL) {
             AnyView(fallback)
         }
-        .frame(width: width, height: height)
+        .frame(width: artworkWidth, height: height)
         .clipShape(RoundedRectangle(cornerRadius: Phone.posterRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Phone.posterRadius, style: .continuous)
@@ -273,6 +308,10 @@ struct PosterCard: View {
             }
         }
         .shadow(color: .black.opacity(0.45), radius: 8, y: 4)
+        #if os(macOS)
+        .animation(.easeInOut(duration: 0.22), value: isHovering)
+        .onHover { hovering in isHovering = hovering }
+        #endif
     }
 
     /// Addons without poster art still have to be tappable and identifiable,

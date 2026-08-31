@@ -45,7 +45,12 @@ struct ProfileScreen: View {
                     VStack(alignment: .leading, spacing: 22) {
                         switcher
                         appearance
+                        // tvOS has no WebKit, so no trailer ever plays there
+                        // and the controls would promise something the TV
+                        // can't do.
+                        #if os(iOS) || os(macOS)
                         trailers
+                        #endif
                         account
                         server
                         #if os(macOS)
@@ -218,6 +223,7 @@ struct ProfileScreen: View {
 
     // MARK: Trailers
 
+    #if os(iOS) || os(macOS)
     /// Trailers come from the addon's own metadata and need nothing set up.
     /// The TMDB key is optional extra coverage for addons that don't carry
     /// them, so it sits behind a disclosure rather than in the way.
@@ -235,31 +241,39 @@ struct ProfileScreen: View {
                         .foregroundStyle(.white.opacity(0.4))
                         .fixedSize(horizontal: false, vertical: true)
 
-                    DisclosureGroup("TMDB key (optional)", isExpanded: $showTmdbKey) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            SecureField("TMDB API key", text: $tmdb.apiKey)
-                                .textFieldStyle(.plain)
-                                .platformNoAutocapitalization()
-                                .autocorrectionDisabled()
-                                .font(.subheadline)
-                                .foregroundStyle(.white)
-                                .padding(12)
-                                .glassCard(cornerRadius: 14)
-
-                            Text("Only used when an addon doesn't supply a trailer itself. A free key comes from themoviedb.org → Settings → API.")
-                                .font(.caption2)
-                                .foregroundStyle(.white.opacity(0.4))
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(.top, 8)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { showTmdbKey.toggle() }
+                    } label: {
+                        Label(
+                            "TMDB key (optional)",
+                            systemImage: showTmdbKey ? "chevron.down" : "chevron.right"
+                        )
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.8))
                     }
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.8))
-                    .tint(theme.palette.accent)
+                    .buttonStyle(.plain)
+
+                    if showTmdbKey {
+                        SecureField("TMDB API key", text: $tmdb.apiKey)
+                            .textFieldStyle(.plain)
+                            .platformNoAutocapitalization()
+                            .autocorrectionDisabled()
+                            .font(.subheadline)
+                            .foregroundStyle(.white)
+                            .padding(12)
+                            .glassCard(cornerRadius: 14)
+
+                        Text("Only used when an addon doesn't supply a trailer itself. A free key comes from themoviedb.org → Settings → API.")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.4))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }
     }
+
+    #endif
 
     // MARK: Account
 

@@ -39,6 +39,12 @@ fi
 
 # The download URL prefix has to match where the DMG actually lands, or the
 # feed will point clients at a 404.
+# Always regenerate rather than update in place: generate_appcast keeps
+# fields like minimumSystemVersion from the existing entry, so a rebuild that
+# lowers the deployment target would keep advertising the old, higher one and
+# hide the update from exactly the machines it was lowered for.
+rm -f "$here/appcast.xml"
+
 "$generate_appcast" \
     --download-url-prefix "https://github.com/NuvioApple/NuviOS/releases/download/$tag/" \
     -o "$here/appcast.xml" \

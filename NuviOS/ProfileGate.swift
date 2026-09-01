@@ -17,7 +17,23 @@ struct ProfileGate<Content: View>: View {
 
     private var needsChoice: Bool { profiles.profiles.count > 1 && !hasChosen }
 
-    private let columns = [GridItem(.adaptive(minimum: 108), spacing: 26)]
+    private let itemWidth: CGFloat = 108
+    private let itemSpacing: CGFloat = 26
+
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: itemWidth), spacing: itemSpacing)]
+    }
+
+    /// The width the profiles would occupy on a single row. An adaptive grid
+    /// takes every point it is offered and fills columns from the leading
+    /// edge, so on a wide window two profiles end up pinned to the left of a
+    /// row sized for a dozen. Capping the grid at its natural width lets the
+    /// enclosing VStack centre it, while a window too narrow for one row still
+    /// gets the full width and wraps as before.
+    private var naturalWidth: CGFloat {
+        let count = CGFloat(max(profiles.profiles.count, 1))
+        return count * itemWidth + (count - 1) * itemSpacing
+    }
 
     var body: some View {
         ZStack {
@@ -82,6 +98,7 @@ struct ProfileGate<Content: View>: View {
                         .buttonStyle(.pressable)
                     }
                 }
+                .frame(maxWidth: naturalWidth)
                 .padding(.horizontal, 28)
 
                 Button("Continue as \(profiles.current.name)") {

@@ -3,9 +3,9 @@
   <h1>NuviOS</h1>
 
   <p>
-    Nuvio for iPhone, iPad, Apple TV and Mac — one SwiftUI app, one codebase.
+    The unofficial Apple port of Nuvio — iPhone, iPad, Apple TV and Mac, one SwiftUI app, one codebase.
     <br />
-    Bring your own sources. Nuvio turns them into a library with artwork, subtitles, and your place saved on every screen.
+    Bring your own sources. NuviOS turns them into a library with artwork, subtitles, and your place saved on every screen.
   </p>
 
   [Website](https://nuvio.tv) · [Android](https://github.com/NuvioMedia/NuvioTV) · [Support Nuvio](https://nuvio.tv/support)
@@ -14,9 +14,9 @@
 
 ## Get NuviOS
 
-**Mac** — download the latest [DMG](distribution/), drag Nuvio to Applications, and it keeps
+**Mac** — download the latest [DMG](distribution/), drag NuviOS to Applications, and it keeps
 itself up to date from then on: it checks once a day and installs on quit, or on demand from
-**Nuvio → Check for Updates…**.
+**NuviOS → Check for Updates…**.
 
 **iPhone, iPad and Apple TV** — build and install it yourself. There is no App Store build, and a
 sideloaded install cannot update itself; whatever put it on the device has to replace it.
@@ -24,7 +24,7 @@ sideloaded install cannot update itself; whatever put it on the device has to re
 ## What it does
 
 - **Stremio-protocol addons** supply the catalogs, metadata and streams. Nothing is bundled — you
-  point the app at the addons you already use.
+  point NuviOS at the addons you already use.
 - **Two playback engines.** [AetherEngine](https://github.com/superuser404notfound/AetherEngine)
   runs first: FFmpeg demuxes and the platform decodes, so Dolby Vision stays a real display switch,
   Atmos is passed through rather than decoded to PCM, and tvOS Match Content drives the panel.
@@ -33,7 +33,7 @@ sideloaded install cannot update itself; whatever put it on the device has to re
   rather than cached.
 - **Profiles, watch progress and collections** sync across every device on the account.
 - **Trailers** work out of the box from the addon's own metadata; a TMDB key is optional.
-- **Your own backend.** The app discovers a deployment from its `/.well-known/nuvio` document, so
+- **Your own backend.** NuviOS discovers a deployment from its `/.well-known/nuvio` document, so
   no keys are baked in and any Nuvio server will do — the hosted one is just the default.
 
 ## Build from source

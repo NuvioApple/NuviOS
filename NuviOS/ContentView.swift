@@ -59,6 +59,11 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: player.request)
+        // The destinations live in the window's own tab bar now, which is
+        // chrome the window draws — not a view inside it, so the player
+        // overlaid on the content cannot cover it. While something is playing
+        // there is nowhere to navigate to anyway, so it goes.
+        .toolbar(player.request == nil ? .visible : .hidden, for: .windowToolbar)
         #endif
         .environmentObject(theme)
         .environmentObject(profiles)
@@ -72,11 +77,17 @@ struct ContentView: View {
         // the layout metrics key off the space a screen has rather than off a
         // guess at the device. On iOS the destinations sit in a bar over the
         // content, so the window is that space and one measurement here serves
-        // every screen. The Mac's sidebar makes the window wider than the
-        // column, so it measures inside the shell instead — see
+        // every screen. The Mac measures inside the shell instead, where the
+        // column is whatever the tab bar leaves — see
         // `measuringContentViewport`.
         #if os(iOS) || os(tvOS)
         .measuringViewport()
+        #endif
+        // A sideloaded build can't replace itself, so the most it can do is
+        // notice a newer release and say so. The Mac has Sparkle instead, and
+        // the TV's version of this is a QR code rather than a link.
+        #if os(iOS)
+        .githubUpdateAlert()
         #endif
         .task {
             guard !didStart else { return }

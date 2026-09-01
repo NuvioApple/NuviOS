@@ -317,9 +317,36 @@ struct FolderScreen: View {
 
     @State private var selected: MetaSelection?
 
+    #if os(macOS)
+    /// Which poster in the grid is open, and how much room it needs. The grid
+    /// makes that room the same way a shelf does — the cards after it on its
+    /// own row stand aside — so nothing moves under a resting pointer.
+    @State private var expansion = ShelfExpansion()
+    #endif
+
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: Phone.posterWidth), spacing: Phone.posterSpacing)]
     }
+
+    #if os(macOS)
+    /// The shape of the grid: how many posters `.adaptive(minimum:)` fits
+    /// across the content column — which is what says where one row ends and
+    /// the next begins — and the pitch it lays them out on.
+    ///
+    /// `.adaptive` doesn't report the number of columns it settled on, so this
+    /// re-derives it the same way: as many columns of at least the minimum
+    /// width as the column will take.
+    private var rowMetrics: RowMetrics {
+        let pitch = Phone.posterWidth + Phone.posterSpacing
+        let available = Phone.width - Phone.pagePadding * 2 + Phone.posterSpacing
+
+        return RowMetrics(
+            columnsPerRow: pitch > 0 ? max(Int(available / pitch), 1) : 1,
+            slotWidth: Phone.posterWidth,
+            pitch: pitch
+        )
+    }
+    #endif
 
     private var tab: FolderTab? {
         guard model.tabs.indices.contains(model.selection) else { return nil }
@@ -349,6 +376,13 @@ struct FolderScreen: View {
                 .padding(.bottom, Phone.tabBarClearance)
             }
             .scrollIndicators(.hidden)
+            #if os(macOS)
+            // Posters pass under a still pointer as the grid scrolls; opening
+            // one of those is answering the scroll rather than the pointer.
+            .onScrollPhaseChange { _, phase in
+                expansion.isScrolling = phase != .idle
+            }
+            #endif
             // The banner is allowed under the status bar and the nav bar —
             // artwork that stops short of the edges isn't a title card.
             .ignoresSafeArea(edges: .top)
@@ -510,7 +544,7 @@ struct FolderScreen: View {
                 note("\(tab.label) didn't respond.")
             case .loaded(let items):
                 LazyVGrid(columns: columns, spacing: Phone.posterSpacing + 6) {
-                    ForEach(items) { item in
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         let baseURL = model.baseURL(for: item, tab: tab)
                         PosterCard(item: item, addonBaseURL: baseURL) {
                             selected = MetaSelection(
@@ -519,9 +553,15 @@ struct FolderScreen: View {
                                 related: items
                             )
                         }
+                        #if os(macOS)
+                        .standingAside(for: expansion, slot: index, metrics: rowMetrics)
+                        #endif
                     }
                 }
                 .padding(.horizontal, Phone.pagePadding)
+                #if os(macOS)
+                .environment(expansion)
+                #endif
             }
         } else if model.isLoading {
             LazyVGrid(columns: columns, spacing: Phone.posterSpacing) {

@@ -14,6 +14,10 @@ enum RootTab: Hashable {
 /// same destinations live along the bottom instead — Home, Movies, Series,
 /// Search, and the profile switcher in the trailing corner, which is the
 /// arrangement Netflix, Disney+ and the Apple TV app have all settled on.
+///
+/// The Mac takes the same destinations across the platform's own tab bar at
+/// the top of the window, which keeps the full width of the window for the
+/// artwork the app exists to show.
 struct RootView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var theme: ThemeStore
@@ -94,15 +98,17 @@ struct RootView: View {
         }
         .task {
             await profiles.sync(session: session)
-            library.activate(profile: profiles.current)
             PlaybackProgress.activate(profile: profiles.current)
+            // Reads the device's copy of the list first and reconciles it with
+            // the account's, so the list draws immediately and then catches up.
+            await library.sync(session: session, profile: profiles.current)
             await model.loadIfNeeded(session: session, profile: profiles.current)
         }
         // Switching profile can switch addon lists, so the shelves reload and
         // the list follows the profile.
         .task(id: profiles.currentIndex) {
-            library.activate(profile: profiles.current)
             PlaybackProgress.activate(profile: profiles.current)
+            await library.sync(session: session, profile: profiles.current)
             await model.loadIfProfileChanged(session: session, profile: profiles.current)
         }
     }

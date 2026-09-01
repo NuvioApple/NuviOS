@@ -29,13 +29,13 @@ extension View {
         }
     }
 
-    /// The Mac shell keeps its destinations in a sidebar, so the window is
-    /// wider than the column a screen is drawn in. Measured at the window, the
-    /// billboard and the shelves are sized for room they do not have — the
-    /// hero comes out taller than its column and the artwork is cropped to a
-    /// black band. The Mac measures the content column instead; the phone and
-    /// the iPad have their destinations in a bar over the content, where the
-    /// window and the column are the same width, and keep measuring the root.
+    /// The Mac measures the column a screen is actually drawn in rather than
+    /// the window around it, so the billboard and the shelves are never sized
+    /// for room they do not have — measured at the window, the hero comes out
+    /// taller than its column and the artwork is cropped to a black band. The
+    /// phone and the iPad have their destinations in a bar over the content,
+    /// where the window and the column are the same width, and keep measuring
+    /// the root.
     @ViewBuilder
     func measuringContentViewport() -> some View {
         #if os(macOS)
@@ -67,8 +67,9 @@ enum Phone {
     static var shelfSpacing: CGFloat { (26 * scale).rounded() }
     /// Clears the floating glass tab bar so the last row stays reachable. The
     /// bar barely grows with the window, so neither does this. The Mac's
-    /// destinations live in a sidebar instead, so nothing overlaps the bottom
-    /// of the window there and only ordinary breathing room is needed.
+    /// destinations live in the tab bar across the top instead, so nothing
+    /// overlaps the bottom of the window there and only ordinary breathing
+    /// room is needed.
     static var tabBarClearance: CGFloat {
         #if os(macOS)
         (24 * min(scale, 1.3)).rounded()
@@ -126,6 +127,217 @@ enum Phone {
     /// the copy stays clear of the bottom edge at every size.
     static var billboardBottomInset: CGFloat { min(max(billboardHeight * 0.07, 20), 48) }
 }
+
+// MARK: - Shelf expansion
+
+#if os(macOS)
+/// What a shelf knows about the one card in it that is currently open.
+///
+/// A card opens *over* the shelf: its own slot never changes size, so nothing
+/// it does can move the shelf under a pointer that is standing still. The room
+/// it needs is made by the cards after it standing aside — an offset, which is
+/// drawn and hit-tested where you see it, and which leaves the layout, the
+/// content size and the scroll position exactly as they were.
+///
+/// The cards after the open one carry most of that room. A card near the end of
+/// a row has little room after it and would be cut off at the edge, so there the
+/// cards before it give up room too and the whole run slides left — the open
+/// card is always shown whole, whichever end of the row it sits at.
+@MainActor
+@Observable
+final class ShelfExpansion {
+    /// Which slot along the shelf is open.
+    var expandedSlot: Int?
+    /// The row is being scrolled right now.
+    ///
+    /// Cards pass under a still pointer while a row scrolls, and every one of
+    /// them is hovered on the way past. Opening any of those is answering the
+    /// scroll, not the pointer — so while this is true the cards hold whatever
+    /// they were, and settle up when the scrolling stops.
+    var isScrolling = false
+    /// How much wider the open card is than the slot it sits in — exactly the
+    /// distance the cards after it have to stand aside.
+    var extraWidth: CGFloat = 0
+
+    func open(slot: Int, extraWidth: CGFloat) {
+        expandedSlot = slot
+        self.extraWidth = extraWidth
+    }
+
+    func close(slot: Int) {
+        // Only the card that opened may close: a pointer moving from one card
+        // straight to the next reports the new card's opening before the old
+        // card's closing, and a stale close would cancel the fresh open.
+        guard expandedSlot == slot else { return }
+        expandedSlot = nil
+    }
+}
+
+/// How a wrapping row of cards is laid out, which is what says whether the card
+/// that is open has the room to open into.
+struct RowMetrics {
+    /// How many cards fit across before the row wraps.
+    let columnsPerRow: Int
+    /// The width of one card's slot.
+    let slotWidth: CGFloat
+    /// Slot to slot: the slot's width plus the gap after it.
+    let pitch: CGFloat
+
+    /// How far the open card in `slot` has to pull its row left so that its
+    /// full width lands inside the row rather than off the end of it — limited
+    /// by the room actually in front of it, since a row cannot slide further
+    /// left than its own first card.
+    func leftShift(forSlotOpenAt slot: Int, extraWidth: CGFloat) -> CGFloat {
+        guard columnsPerRow > 0 else { return 0 }
+
+        let column = slot % columnsPerRow
+        let gap = pitch - slotWidth
+        // From the open card's leading edge to the end of its row.
+        let roomAfter = CGFloat(columnsPerRow - column) * pitch - gap
+        let overflow = max(slotWidth + extraWidth - roomAfter, 0)
+        let roomBefore = CGFloat(column) * pitch
+
+        return min(overflow, roomBefore)
+    }
+}
+
+/// The line or two a card shows about a title while it is open.
+///
+/// A catalog row carries only what the addon chose to put in it, and plenty of
+/// them leave the description out of a row and keep it for the title's own meta
+/// response — so a card that has no description asks for one the moment the
+/// pointer settles on it, in the time it is already waiting before it opens.
+///
+/// Answers are kept for the life of the launch. A row scrolled past and come
+/// back to asks nothing, and a title in three rows at once is fetched once.
+@MainActor
+@Observable
+final class SynopsisCache {
+    static let shared = SynopsisCache()
+
+    private var byKey: [String: String] = [:]
+    /// Keys being fetched right now, so a pointer wavering over one card can't
+    /// put the same request out twice.
+    private var inFlight: Set<String> = []
+
+    private init() {}
+
+    /// What this card can show: the row's own description if it came with one,
+    /// otherwise whatever the fetch has since brought back.
+    func synopsis(for item: MetaItem, addonBaseURL: String) -> String? {
+        if let own = item.description?.trimmed, !own.isEmpty { return Self.shortened(own) }
+
+        return byKey[Self.key(item, addonBaseURL)]
+    }
+
+    func fetchIfNeeded(for item: MetaItem, addonBaseURL: String) {
+        guard (item.description?.trimmed ?? "").isEmpty, !addonBaseURL.isEmpty else { return }
+
+        let key = Self.key(item, addonBaseURL)
+        guard byKey[key] == nil, !inFlight.contains(key) else { return }
+
+        inFlight.insert(key)
+        Task { @MainActor in
+            let detail = try? await AddonClient().meta(
+                baseURL: addonBaseURL,
+                type: item.type,
+                id: item.id
+            )
+            inFlight.remove(key)
+            guard let text = detail?.description?.trimmed, !text.isEmpty else { return }
+
+            byKey[key] = Self.shortened(text)
+        }
+    }
+
+    /// A card is not a detail page. Two lines is what there is room for beside
+    /// the artwork, so a synopsis is cut to the end of the last full sentence
+    /// that fits and given an ellipsis to say that it goes on.
+    static func shortened(_ text: String, limit: Int = 180) -> String {
+        let clean = text.replacingOccurrences(of: "\n", with: " ").trimmed
+        guard clean.count > limit else { return clean }
+
+        let head = String(clean.prefix(limit))
+        // Prefer a sentence's own ending, and settle for a word's.
+        if let sentence = head.range(of: ". ", options: .backwards), head.distance(
+            from: head.startIndex,
+            to: sentence.lowerBound
+        ) > limit / 2 {
+            return String(head[head.startIndex..<sentence.lowerBound]) + "."
+        }
+        if let space = head.range(of: " ", options: .backwards) {
+            return String(head[head.startIndex..<space.lowerBound]) + "…"
+        }
+
+        return head + "…"
+    }
+
+    private static func key(_ item: MetaItem, _ addonBaseURL: String) -> String {
+        "\(addonBaseURL)|\(item.type)|\(item.id)"
+    }
+}
+
+/// A card's position along the shelf holding it, which is how it tells that
+/// shelf which cards are the ones after it. Absent outside a shelf.
+private struct ShelfSlotKey: EnvironmentKey {
+    static let defaultValue: Int? = nil
+}
+
+extension EnvironmentValues {
+    var shelfSlot: Int? {
+        get { self[ShelfSlotKey.self] }
+        set { self[ShelfSlotKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Places a card in a row of cards that make room for whichever of them is
+    /// open: it learns its own position, and moves aside when a card in its own
+    /// row opens.
+    ///
+    /// `metrics` is what tells a grid from a shelf. A shelf is one long row that
+    /// scrolls and is not clipped at its ends, so every later card simply stands
+    /// aside. A grid wraps and *is* clipped at the column's edge, so it also
+    /// needs to know its own shape: only the open card's own row moves — the
+    /// rows below it are not in its way and must not lurch sideways — and a
+    /// card opening near the end of a row pulls that row left rather than
+    /// opening off the edge of the screen.
+    func standingAside(
+        for expansion: ShelfExpansion,
+        slot: Int,
+        metrics: RowMetrics? = nil
+    ) -> some View {
+        let distance: CGFloat = {
+            guard let open = expansion.expandedSlot else { return 0 }
+
+            var shift: CGFloat = 0
+            if let metrics, metrics.columnsPerRow > 0 {
+                guard slot / metrics.columnsPerRow == open / metrics.columnsPerRow else { return 0 }
+                // Every card in the row gives up the same ground, so the cards
+                // keep their spacing and only the row's leading end runs off
+                // the edge.
+                shift -= metrics.leftShift(
+                    forSlotOpenAt: open,
+                    extraWidth: expansion.extraWidth
+                )
+            }
+            // On top of that, the cards after the open one carry the width it
+            // spills over them.
+            if slot > open { shift += expansion.extraWidth }
+
+            return shift
+        }()
+
+        return self
+            .environment(\.shelfSlot, slot)
+            // An offset, not a resize: the row's layout, content size and
+            // scroll position are untouched, so the only thing that ever moves
+            // under the pointer is a card getting out of its way.
+            .offset(x: distance)
+            .animation(.easeInOut(duration: 0.42), value: distance)
+    }
+}
+#endif
 
 // MARK: - Interaction
 
@@ -197,7 +409,38 @@ struct PosterCard: View {
     /// The Mac is the only platform with a pointer, so it is the only one that
     /// can have a hover state at all. The phone has no hover and the TV moves
     /// by focus, which already has its own treatment.
-    @State private var isHovering = false
+    ///
+    /// The pointer having rested on the card long enough that turning it over
+    /// is an answer to intent rather than to a pointer crossing the shelf.
+    /// Hovering alone starts the backdrop loading; only this opens the card.
+    @State private var isExpanded = false
+    /// The card is loading its backdrop in the background, ahead of opening.
+    @State private var isPreloadingBackdrop = false
+    @State private var expandTask: Task<Void, Never>?
+    /// Absent whenever a card is used outside a shelf — a grid, a detail page —
+    /// where there is no row of neighbours to stand aside and the card simply
+    /// opens over whatever is beside it.
+    @Environment(ShelfExpansion.self) private var shelfExpansion: ShelfExpansion?
+    @Environment(\.shelfSlot) private var shelfSlot: Int?
+    /// Whether the pointer is over this card's place in the row, which is not
+    /// the same question as whether the card is open.
+    @State private var isPointerInside = false
+
+    private var isRowScrolling: Bool { shelfExpansion?.isScrolling ?? false }
+
+    /// How long the pointer has to stay put before the card opens. Short
+    /// enough to feel like the card answering the pointer rather than a wait,
+    /// long enough that a pointer crossing the shelf on its way somewhere else
+    /// doesn't open every card it passes over.
+    private static let hoverExpandDelay: Double = 0.7
+
+    /// The backdrop starts loading before the card opens, but not on the very
+    /// first instant of hover: sweeping a pointer across a shelf touches a
+    /// dozen cards in a second, and fetching and decoding a full-size backdrop
+    /// for each of them is what made a fast scroll beachball. A pointer that
+    /// stays this long is on the card on purpose, and the head start means the
+    /// backdrop is decoded by the time it is asked to appear.
+    private static let backdropPreloadDelay: Double = 0.2
     #endif
 
     var body: some View {
@@ -227,6 +470,12 @@ struct PosterCard: View {
         }
         .buttonStyle(.pressableCard)
         .accessibilityLabel(rank.map { "\(item.name), number \($0)" } ?? item.name)
+        #if os(macOS)
+        // A LazyHStack draws its children in order, so without this the cards
+        // further along the shelf paint over the widened one and it reads as
+        // sliding underneath them.
+        .zIndex(isExpanded ? 1 : 0)
+        #endif
     }
 
     /// The title under the artwork. A phone lets the poster speak for itself —
@@ -280,16 +529,110 @@ struct PosterCard: View {
 
     private var artworkWidth: CGFloat {
         #if os(macOS)
-        isHovering ? landscapeWidth : width
+        isExpanded ? landscapeWidth : width
         #else
         width
         #endif
     }
 
+    /// The slot the card occupies in the shelf, and — on the Mac — the whole of
+    /// what the pointer answers to.
+    ///
+    /// The opened card is drawn *over* the shelf rather than inside it: the slot
+    /// keeps the poster's width whatever the artwork is doing, and the widened
+    /// plate is an overlay that spills out of it. Growing the slot instead moved
+    /// every card after this one — and the scroll view realigned itself to the
+    /// new geometry — all while the pointer stood still, which is how a card two
+    /// along ended up under a pointer that had not left this one.
+    ///
+    /// The pointer belongs to the slot, not to the plate: a card is hovered
+    /// while the pointer is over the poster's own place in the row, and opening
+    /// does not enlarge that. So the region that decides hovering is a fixed
+    /// rectangle that never moves and never resizes — leave the poster's place
+    /// and the card closes, whatever it happened to be drawing over at the time.
+    /// The plate takes no pointer at all, so it can never stand between the
+    /// pointer and the card underneath it.
     private var poster: some View {
+        #if os(macOS)
+        Color.clear
+            .frame(width: width, height: height)
+            .contentShape(Rectangle())
+            .overlay(alignment: .leading) { artworkPlate.allowsHitTesting(false) }
+            .onHover { hovering in
+                isPointerInside = hovering
+                // A row in motion answers to the scroll, not to the cards it
+                // is carrying past the pointer.
+                guard !isRowScrolling else { return }
+                if hovering { beginOpening() } else { closeNow() }
+            }
+            .onChange(of: isRowScrolling) { _, scrolling in
+                if scrolling {
+                    // Whatever is open stays open and travels with the row —
+                    // collapsing a card the moment a scroll begins is the
+                    // flicker this is here to avoid — but nothing new opens.
+                    expandTask?.cancel()
+                } else {
+                    // Come to rest as a row of posters, then let wherever the
+                    // pointer actually ended up open on its own terms.
+                    closeNow()
+                    if isPointerInside { beginOpening() }
+                }
+            }
+            .onDisappear {
+                // A card scrolled out of the row must not open behind the
+                // pointer, and must not leave the row holding room for a card
+                // that is no longer in it.
+                isPointerInside = false
+                closeNow()
+            }
+        #else
+        artworkPlate
+        #endif
+    }
+
+    /// Starts the wait that opens the card: the backdrop loads first, and the
+    /// card turns over once the pointer has stayed long enough to mean it.
+    private func beginOpening() {
+        // Asked for now, not when the card opens: the fetch and the backdrop
+        // then have the whole wait to arrive, and the card opens complete.
+        SynopsisCache.shared.fetchIfNeeded(for: item, addonBaseURL: addonBaseURL)
+        expandTask?.cancel()
+        expandTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(Self.backdropPreloadDelay))
+            guard !Task.isCancelled else { return }
+            isPreloadingBackdrop = true
+
+            try? await Task.sleep(
+                for: .seconds(Self.hoverExpandDelay - Self.backdropPreloadDelay)
+            )
+            guard !Task.isCancelled else { return }
+            isExpanded = true
+            // Ask the cards after this one to stand aside by exactly the width
+            // this one is about to spill over them.
+            if let shelfSlot {
+                shelfExpansion?.open(slot: shelfSlot, extraWidth: landscapeWidth - width)
+            }
+        }
+    }
+
+    /// Back to a poster at once. The delay is there to make opening
+    /// deliberate, not to make a row slow to recover.
+    private func closeNow() {
+        expandTask?.cancel()
+        expandTask = nil
+        isExpanded = false
+        isPreloadingBackdrop = false
+        if let shelfSlot { shelfExpansion?.close(slot: shelfSlot) }
+    }
+
+    /// The artwork itself, at whatever width it is currently drawn.
+    private var artworkPlate: some View {
         artwork
         .frame(width: artworkWidth, height: height)
         .clipShape(RoundedRectangle(cornerRadius: Phone.posterRadius, style: .continuous))
+        #if os(macOS)
+        .overlay { synopsis }
+        #endif
         .overlay {
             RoundedRectangle(cornerRadius: Phone.posterRadius, style: .continuous)
                 .strokeBorder(.white.opacity(0.10), lineWidth: 1)
@@ -313,10 +656,46 @@ struct PosterCard: View {
         // Slower than a click's worth of feedback and eased at both ends: the
         // card is drifting open under a pointer that may only be passing over
         // it, not answering a press.
-        .animation(.easeInOut(duration: 0.42), value: isHovering)
-        .onHover { hovering in isHovering = hovering }
+        .animation(.easeInOut(duration: 0.42), value: isExpanded)
         #endif
     }
+
+    #if os(macOS)
+    /// What the title is about, across the foot of the opened card.
+    ///
+    /// Only once the card is open: a poster is too narrow to hold a sentence,
+    /// and the backdrop is the moment there is room for one. It sits in the
+    /// leading half so it never runs under the rating badge in the opposite
+    /// corner, over a wash dark enough to read on artwork of any brightness.
+    @ViewBuilder
+    private var synopsis: some View {
+        if isExpanded,
+           let text = SynopsisCache.shared.synopsis(for: item, addonBaseURL: addonBaseURL) {
+            ZStack(alignment: .bottomLeading) {
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.85)],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
+
+                Text(text)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.88))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: artworkWidth * 0.62, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 9)
+            }
+            // Clipped to the card's own corners: the wash is a part of the
+            // artwork, not a panel laid over it.
+            .clipShape(RoundedRectangle(cornerRadius: Phone.posterRadius, style: .continuous))
+            .allowsHitTesting(false)
+            .transition(.opacity)
+        }
+    }
+    #endif
 
     /// Poster and backdrop are drawn as one stack and cross-faded, rather than
     /// one image view whose URL changes.
@@ -341,7 +720,13 @@ struct PosterCard: View {
                 .clipped()
                 .opacity(isShowingBackdrop ? 0 : 1)
 
-            if let backdropURL {
+            // Built only once the pointer has settled on this card. Holding a
+            // second full-size image for every card in every shelf meant a fast
+            // scroll kicked off a backdrop fetch and decode per card it built —
+            // enough of them at once to stall the app. The load starts ahead of
+            // the card opening, so it is still decoded by the time it is asked
+            // to appear.
+            if isPreloadingBackdrop, let backdropURL {
                 RemoteImage(url: backdropURL) { AnyView(EmptyView()) }
                     .frame(width: artworkWidth, height: height)
                     .clipped()
@@ -357,7 +742,7 @@ struct PosterCard: View {
     #if os(macOS)
     /// A title with no backdrop still widens, but keeps its poster rather than
     /// fading to nothing.
-    private var isShowingBackdrop: Bool { isHovering && backdropURL != nil }
+    private var isShowingBackdrop: Bool { isExpanded && backdropURL != nil }
     #endif
 
     /// Addons without poster art still have to be tappable and identifiable,
@@ -414,6 +799,12 @@ struct Shelf<Item: Identifiable, Card: View>: View {
     @ViewBuilder var card: (Item, Int) -> Card
     var onSeeAll: (() -> Void)?
 
+    #if os(macOS)
+    /// Which card in *this* shelf is open, and how much room it needs. One per
+    /// shelf, so opening a card in one row never moves another row.
+    @State private var expansion = ShelfExpansion()
+    #endif
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ShelfHeader(title: title, subtitle: subtitle, onSeeAll: onSeeAll)
@@ -422,15 +813,30 @@ struct Shelf<Item: Identifiable, Card: View>: View {
                 LazyHStack(spacing: isRanked ? 2 : Phone.posterSpacing) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
                         card(item, offset)
+                        #if os(macOS)
+                            // The cards after the open one stand aside to make
+                            // the room it spills into, and slide back the
+                            // moment it closes.
+                            .standingAside(for: expansion, slot: offset)
+                        #endif
                     }
                 }
                 .padding(.horizontal, Phone.pagePadding)
                 .scrollTargetLayout()
+                #if os(macOS)
+                .environment(expansion)
+                #endif
             }
             .scrollTargetBehavior(.viewAligned)
             .scrollClipDisabled()
+            #if os(macOS)
+            .onScrollPhaseChange { _, phase in
+                expansion.isScrolling = phase != .idle
+            }
+            #endif
         }
     }
+
 }
 
 struct ShelfHeader: View {

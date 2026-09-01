@@ -167,17 +167,16 @@ extension View {
         #endif
     }
 
-    /// The shell's tab style. A Mac window is wide and has a pointer, so the
-    /// destinations read better down a sidebar than across a bar — which is
-    /// where the TV app, Music and Photos all put them on the Mac. iOS keeps
-    /// the Liquid Glass bar along the bottom, under the thumb.
+    /// The shell's tab style.
+    ///
+    /// The Mac takes the platform's own top tab bar — `TabView`'s default —
+    /// rather than a sidebar: a sidebar spends a column of a window on five
+    /// fixed destinations and pushes the artwork it exists to show into a
+    /// narrower space. iOS keeps the Liquid Glass bar along the bottom, under
+    /// the thumb.
     @ViewBuilder
     func platformShellTabViewStyle() -> some View {
-        #if os(macOS)
-        tabViewStyle(.sidebarAdaptable)
-        #else
         self
-        #endif
     }
 
     /// The paged carousel style exists on iOS and tvOS only. macOS falls back

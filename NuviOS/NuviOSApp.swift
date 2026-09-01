@@ -16,8 +16,8 @@ struct NuviOSApp: App {
                 .environmentObject(session)
                 .preferredColorScheme(.dark)
                 #if os(macOS)
-                // A window narrower than this can't hold a shelf of posters
-                // beside the sidebar, so the Mac window doesn't go there.
+                // A window narrower than this can't hold a shelf of posters,
+                // so the Mac window doesn't go there.
                 .frame(minWidth: 900, minHeight: 620)
                 #endif
         }

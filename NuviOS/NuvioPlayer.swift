@@ -42,6 +42,27 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
     @Published private(set) var isBuffering = false
     @Published private(set) var duration: Double?
     @Published private(set) var isSeekable = true
+    /// When the picture started, so a stream that hasn't said how long it is
+    /// yet can be told from one that never will.
+    private var playingSince: Date?
+
+    /// A channel rather than a file: nothing to seek within, and no end.
+    ///
+    /// Both halves are needed, and so is the wait. libvlc reports neither a
+    /// length nor seekability at the instant a file opens — it hasn't parsed
+    /// enough of it to know — so a film that answers a second later was being
+    /// labelled LIVE on the strength of the one moment it couldn't answer.
+    /// Anything with a duration is a recording, whatever else it claims.
+    var isLive: Bool {
+        guard duration == nil, !isSeekable else { return false }
+        guard let playingSince else { return false }
+
+        return Date().timeIntervalSince(playingSince) > Self.liveVerdictDelay
+    }
+
+    /// How long a stream is given to say how long it is before it is taken at
+    /// its word that it has no end.
+    private static let liveVerdictDelay: TimeInterval = 4
     @Published var currentTime: Double = 0
 
     @Published private(set) var audioTracks: [MediaTrack] = []
@@ -233,6 +254,16 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
         }
 
         linkCheck = Task { [weak self] in
+            // The audition dialled this address moments ago and the host
+            // answered. Asking again would spend a round trip before the
+            // picture to learn what is already known — and would count as one
+            // more request against a host that rate-limits them.
+            if await StreamProbeLedger.shared.answeredRecently(url) {
+                guard !Task.isCancelled, let self else { return }
+                self.start(url: url, headers: headers, into: view)
+                return
+            }
+
             let verdict = await StreamLinkCheck.verify(url: url, headers: headers)
             // A later load — a failover, a retry, or the viewer closing the
             // player — cancels this task, so reaching here means the verdict
@@ -361,6 +392,10 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
         phase = .opening
         isBuffering = true
         duration = nil
+        // A new source is asked afresh whether it has an end; the one it
+        // replaced says nothing about it.
+        isSeekable = true
+        playingSince = nil
         subtitleCues = []
 
         engine.halt()
@@ -395,6 +430,10 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
         phase = .opening
         isBuffering = true
         duration = nil
+        // A new source is asked afresh whether it has an end; the one it
+        // replaced says nothing about it.
+        isSeekable = true
+        playingSince = nil
         subtitleCues = []
 
         engine.halt()
@@ -499,11 +538,16 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
     // MARK: Transport
 
     func togglePlayPause() {
+        // Whatever a hold was doing, it is over: the picture is being stopped
+        // or started by hand.
+        endSpeedBoost()
         if engine.isPlaying {
             engine.pause()
             phase = .paused
         } else {
             engine.play()
+            // Engines routinely come back from a pause at 1×.
+            if rate != 1 { engine.setRate(rate) }
             phase = .playing
         }
         updateNowPlaying()
@@ -542,6 +586,13 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
     }
 
     func setRate(_ value: Float) {
+        // A speed chosen by hand ends any hold that is still notionally in
+        // progress. A press-and-hold whose end SwiftUI never delivered — a
+        // click that finishes outside the picture, a gesture cancelled by the
+        // menu opening — used to leave the player stuck at "2×" with no way
+        // to talk it down, because every later choice was overwritten by a
+        // boost that had never ended.
+        isBoosting = false
         rate = value
         rateBeforeBoost = value
         engine.setRate(value)
@@ -966,6 +1017,11 @@ extension NuvioPlayerModel: PlaybackEngineDelegate {
         phase = .playing
         isBuffering = false
         isSeekable = engine.isSeekable
+        if playingSince == nil { playingSince = Date() }
+        // An engine opens every source at 1×, so a speed set before this one
+        // started — or carried over from the source it replaced — has to be
+        // put back or the label and the picture disagree.
+        if rate != 1 { engine.setRate(rate) }
         confirmResumeLanded()
         applyTrackPreferenceIfNeeded()
         refreshChapters()
@@ -1010,6 +1066,10 @@ extension NuvioPlayerModel: PlaybackEngineDelegate {
             duration = length
             seekToResumePointIfNeeded()
         }
+        // Read every update, not once at the start: seekability is something
+        // the demuxer works out, and it is routinely false for the first
+        // moment of a perfectly ordinary file.
+        if isSeekable != engine.isSeekable { isSeekable = engine.isSeekable }
         // Tracks can appear a little after playback starts on a stream whose
         // headers arrive late.
         applyTrackPreferenceIfNeeded()
@@ -1510,6 +1570,7 @@ struct NuvioPlayerScreen: View {
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
 
             RoundIcon("goforward.10", label: "Forward 10 seconds", size: .transport) {
@@ -1575,7 +1636,8 @@ struct NuvioPlayerScreen: View {
                 .font(PlayerChrome.timecodeFont)
                 .foregroundStyle(.white.opacity(0.75))
             } else {
-                // A live stream has no length to scrub through.
+                // Nothing to scrub through — either because there is no end to
+                // scrub towards, or because the stream hasn't said yet.
                 Capsule()
                     .fill(.white.opacity(0.28))
                     .frame(height: PlayerChrome.barHeight)
@@ -1584,11 +1646,17 @@ struct NuvioPlayerScreen: View {
                 HStack {
                     Text(NuvioPlayerModel.timecode(position))
                     Spacer(minLength: 0)
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(.red)
-                            .frame(width: 6, height: 6)
-                        Text("LIVE").fontWeight(.bold)
+                    // Only a stream that has actually been judged live says
+                    // so. A recording still working out its own length shows
+                    // its elapsed time and nothing else, rather than calling
+                    // itself a channel for the second it takes to answer.
+                    if model.isLive {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(.red)
+                                .frame(width: 6, height: 6)
+                            Text("LIVE").fontWeight(.bold)
+                        }
                     }
                 }
                 .font(PlayerChrome.timecodeFont)
@@ -1656,6 +1724,7 @@ struct NuvioPlayerScreen: View {
             } label: {
                 RoundIconLabel("list.bullet")
             }
+            .playerMenuChrome()
             .accessibilityLabel("Chapters")
         }
     }
@@ -1687,6 +1756,7 @@ struct NuvioPlayerScreen: View {
             } label: {
                 RoundIconLabel("waveform")
             }
+            .playerMenuChrome()
             .accessibilityLabel("Audio track")
         }
     }
@@ -1735,6 +1805,7 @@ struct NuvioPlayerScreen: View {
             } label: {
                 RoundIconLabel("captions.bubble")
             }
+            .playerMenuChrome()
             .accessibilityLabel("Subtitles")
         }
     }
@@ -1770,6 +1841,7 @@ struct NuvioPlayerScreen: View {
         } label: {
             RoundIconLabel("speedometer")
         }
+        .playerMenuChrome()
         .accessibilityLabel("Playback speed")
     }
 
@@ -1791,6 +1863,7 @@ struct NuvioPlayerScreen: View {
             model.toggleFill()
             scheduleHide()
         }
+        .playerMenuChrome()
         .accessibilityLabel("Zoom")
     }
 
@@ -2164,15 +2237,47 @@ private struct RoundIcon: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            RoundIconLabel(systemName, size: size, carriesGlass: false)
+        switch size {
+        case .utility:
+            Button(action: action) {
+                RoundIconLabel(systemName, size: size, carriesGlass: false)
+            }
+            // `.glass` rather than `.plain`: it carries the press flex, and on
+            // tvOS it is also the focus treatment, so a focused control lifts
+            // and brightens the way every other 26 control does instead of
+            // relying on a highlight this file would have to draw itself.
+            .buttonStyle(.glass)
+            // Without this the style takes its own default shape — a rounded
+            // rectangle — and a row of round glyphs comes out as a row of grey
+            // squares.
+            .buttonBorderShape(.circle)
+            .accessibilityLabel(label)
+
+        case .transport:
+            // No style at all, as the glyph's own comment says: these sit
+            // inside the transport's container, where the play button is the
+            // shape the group flows out of. A style here gives each glyph its
+            // own chip and the group reads as five separate buttons.
+            Button(action: action) {
+                RoundIconLabel(systemName, size: size, carriesGlass: false)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(label)
         }
-        // `.glass` rather than `.plain`: it carries the press flex, and on tvOS
-        // it is also the focus treatment, so a focused control lifts and
-        // brightens the way every other 26 control does instead of relying on
-        // a highlight this file would have to draw itself.
-        .buttonStyle(.glass)
-        .accessibilityLabel(label)
+    }
+}
+
+private extension View {
+    /// Strips a `Menu` back to the glyph it hangs off.
+    ///
+    /// A `Menu` is a control in its own right: left alone it draws a bordered
+    /// well and a disclosure chevron beside the label, which is what turned a
+    /// row of round glass glyphs into a row of grey pills with arrows in them.
+    /// The label already carries its own glass, so the menu brings nothing.
+    func playerMenuChrome() -> some View {
+        menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
     }
 }
 

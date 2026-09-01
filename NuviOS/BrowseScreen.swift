@@ -159,10 +159,6 @@ struct BrowseScreen: View {
                     }
                 }
 
-                if showsHero, !library.titles.isEmpty {
-                    myList
-                }
-
                 // The user's own shelves sit above the addons' catalogs, the
                 // way pinned collections do upstream.
                 if showsHero {
@@ -195,22 +191,6 @@ struct BrowseScreen: View {
         .onChange(of: selected == nil) { _, dismissed in
             guard dismissed else { return }
             model.refreshContinueWatching(session: session, profile: profiles.current)
-        }
-    }
-
-    private var myList: some View {
-        Shelf(
-            title: "My List",
-            items: library.titles
-        ) { saved, _ in
-            PosterCard(item: saved.item, addonBaseURL: saved.addonBaseURL) {
-                selected = MetaSelection(item: saved.item, addonBaseURL: saved.addonBaseURL)
-            }
-            .contextMenu {
-                Button("Remove from My List", systemImage: "minus.circle", role: .destructive) {
-                    library.remove(saved)
-                }
-            }
         }
     }
 

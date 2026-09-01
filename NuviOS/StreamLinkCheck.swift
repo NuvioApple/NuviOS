@@ -15,6 +15,36 @@ import Foundation
 // for the next source, and the viewer is told what actually happened rather
 // than being read a list of things it might have been.
 
+/// Addresses this launch has already had a good answer from.
+///
+/// A source is dialled by the audition, then dialled again by the link check
+/// before it opens — the same question to the same host inside a few seconds,
+/// which costs a round trip before the picture and is one more request for a
+/// host that rate-limits to count against you. An address the audition just
+/// found alive does not need asking twice.
+actor StreamProbeLedger {
+    static let shared = StreamProbeLedger()
+
+    private var answeredAt: [String: Date] = [:]
+
+    /// Short: this says "alive a moment ago", not "alive". A signed link can
+    /// lapse in minutes, so anything older than this is asked again.
+    private static let freshness: TimeInterval = 90
+
+    func record(_ url: URL) {
+        answeredAt[url.absoluteString] = Date()
+    }
+
+    func answeredRecently(_ url: URL) -> Bool {
+        guard let at = answeredAt[url.absoluteString] else { return false }
+        guard Date().timeIntervalSince(at) < Self.freshness else {
+            answeredAt[url.absoluteString] = nil
+            return false
+        }
+        return true
+    }
+}
+
 /// What dialling an address said about the link itself.
 enum StreamLinkCheck: Equatable, Sendable {
     /// The host served the request.

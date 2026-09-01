@@ -35,6 +35,8 @@ struct ProfileScreen: View {
     @State private var destination: Destination?
     /// Collapsed by default: the key is a fallback, not a setup step.
     @State private var showTmdbKey = false
+    /// A title opened from My List, pushed onto this tab's own stack.
+    @State private var selected: MetaSelection?
 
     var body: some View {
         NavigationStack {
@@ -44,6 +46,7 @@ struct ProfileScreen: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
                         switcher
+                        myList
                         appearance
                         // tvOS has no WebKit, so no trailer ever plays there
                         // and the controls would promise something the TV
@@ -53,7 +56,7 @@ struct ProfileScreen: View {
                         #endif
                         account
                         server
-                        #if os(macOS)
+                        #if os(iOS) || os(macOS)
                         updates
                         #endif
                         about
@@ -71,6 +74,7 @@ struct ProfileScreen: View {
                     }
                 }
             }
+            .navigationDestination(item: $selected) { DetailView(selection: $0) }
             .sheet(item: $destination) { destination in
                 Group {
                     switch destination {
@@ -156,6 +160,59 @@ struct ProfileScreen: View {
             Text("\(profiles.profiles.count) of \(Profile.maxProfiles) profiles · synced with your account")
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.4))
+            }
+        }
+    }
+
+    // MARK: My List
+
+    /// What this profile has saved, on the profile that saved it.
+    ///
+    /// My List is per-profile — `LibraryStore` is pointed at a new list every
+    /// time the active profile changes — so it belongs on the screen that says
+    /// who is watching, directly under the switcher that changes whose list
+    /// this is.
+    private var myList: some View {
+        Section(title: "My List") {
+            if library.titles.isEmpty {
+                Text("Titles you add to My List will appear here.")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: Phone.posterSpacing) {
+                        ForEach(library.titles) { saved in
+                            PosterCard(
+                                item: saved.item,
+                                addonBaseURL: saved.addonBaseURL,
+                                // Smaller than a shelf's artwork: this is a
+                                // list inside a settings card, not a row of
+                                // the home screen.
+                                width: Phone.posterWidth * 0.72
+                            ) {
+                                selected = MetaSelection(
+                                    item: saved.item,
+                                    addonBaseURL: saved.addonBaseURL,
+                                    related: library.titles.map(\.item)
+                                )
+                            }
+                            .contextMenu {
+                                Button(
+                                    "Remove from My List",
+                                    systemImage: "minus.circle",
+                                    role: .destructive
+                                ) {
+                                    library.remove(saved)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                // The card's own padding is the breathing room; the row runs
+                // to both edges of it rather than sitting in an inset well.
+                .padding(.horizontal, -4)
             }
         }
     }
@@ -331,12 +388,18 @@ struct ProfileScreen: View {
         }
     }
 
-    #if os(macOS)
-    /// Only the Mac gets this. A sideloaded iOS or tvOS build can't replace
-    /// itself, so there would be nothing behind the button on those.
+    #if os(iOS) || os(macOS)
+    /// Two different things under one heading. The Mac installs its own
+    /// updates with Sparkle; a sideloaded iPhone or iPad can only be told that
+    /// a newer release exists and sent to it. The TV is missing here on
+    /// purpose — it has no browser, so its version of this is a QR code.
     private var updates: some View {
         Section(title: "Updates") {
+            #if os(macOS)
             SoftwareUpdateControls()
+            #else
+            ReleaseUpdateControls()
+            #endif
         }
     }
     #endif

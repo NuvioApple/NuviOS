@@ -198,16 +198,34 @@ final class PlayerPresenter: ObservableObject {
 
 #endif
 
+#if os(macOS)
+/// Hands a chosen stream up to the window's player, and gets the picker out of
+/// the way.
+///
+/// The picker is a sheet, and a sheet is drawn by the window *over* everything
+/// inside it — the root player included. Handing the stream over is the end of
+/// the picker's job, so it closes on the way.
+private struct MacPlayerHandoff: ViewModifier {
+    @Binding var item: PlaybackRequest?
+    @Environment(\.dismiss) private var dismiss
+
+    func body(content: Content) -> some View {
+        content.onChange(of: item) { _, new in
+            guard let new else { return }
+            PlayerPresenter.shared.present(new) { item = nil }
+            dismiss()
+        }
+    }
+}
+#endif
+
 extension View {
     /// Presents a stream: a full-screen cover on iOS and tvOS, the
     /// window-level Mac player above.
     @ViewBuilder
     func platformPlayerCover(item: Binding<PlaybackRequest?>) -> some View {
         #if os(macOS)
-        onChange(of: item.wrappedValue) { _, new in
-            guard let new else { return }
-            PlayerPresenter.shared.present(new) { item.wrappedValue = nil }
-        }
+        modifier(MacPlayerHandoff(item: item))
         #else
         fullScreenCover(item: item) { request in
             NuvioPlayerScreen(request: request)
@@ -518,7 +536,9 @@ struct StreamPicker: View {
                     .listRowBackground(Color.clear)
                 }
 
-                ForEach(streams) { stream in
+                // The same file listed once per tracker or per cache is one
+                // source as far as anyone reading the list is concerned.
+                ForEach(StreamAutoSelector.deduplicated(streams)) { stream in
                     StreamRow(
                         stream: stream,
                         probe: auto.probe(for: stream),
@@ -542,9 +562,12 @@ struct StreamPicker: View {
         case .measuring(let name):
             autoBannerBody("Measuring speed — \(name)")
         case .noneUsable:
-            Label("None of these sources answered. Pick one to try anyway.", systemImage: "exclamationmark.triangle")
-                .font(.footnote)
-                .foregroundStyle(.white.opacity(0.65))
+            Label(
+                "Every source here was refused by its host. Pick one to try anyway.",
+                systemImage: "exclamationmark.triangle"
+            )
+            .font(.footnote)
+            .foregroundStyle(.white.opacity(0.65))
         }
     }
 
@@ -746,7 +769,7 @@ private struct StreamRow: View {
                         if let summary = probe?.summary {
                             Text(summary)
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(probe?.isReachable == true ? .green.opacity(0.75) : .orange.opacity(0.8))
+                                .foregroundStyle(probeTint)
                                 .lineLimit(1)
                         }
                     }
@@ -764,6 +787,8 @@ private struct StreamRow: View {
         switch probe?.verdict {
         case .reachable: return "checkmark.circle.fill"
         case .unreachable: return "xmark.circle"
+        // An untested source is an ordinary source: it looks like every other
+        // row you can press, because pressing it is very likely to work.
         default: return "play.circle.fill"
         }
     }
@@ -774,6 +799,16 @@ private struct StreamRow: View {
         case .reachable: return .green.opacity(0.85)
         case .unreachable: return .orange.opacity(0.7)
         default: return .white.opacity(0.9)
+        }
+    }
+
+    /// Only a host's own refusal is worth colouring as a problem. "Untested"
+    /// is the quietest thing on the row.
+    private var probeTint: Color {
+        switch probe?.verdict {
+        case .reachable: .green.opacity(0.75)
+        case .unreachable: .orange.opacity(0.8)
+        default: .white.opacity(0.4)
         }
     }
 }

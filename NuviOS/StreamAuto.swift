@@ -154,7 +154,14 @@ extension Stream {
 struct StreamProbe: Equatable, Sendable {
     enum Verdict: Equatable, Sendable {
         case pending
+        /// The host said, in so many words, that this link is no good.
         case unreachable(String)
+        /// The probe learned nothing. A timeout, a busy host, a refusal of the
+        /// *probe* rather than of the link — none of which is evidence that
+        /// the source won't play. Debrid hosts in particular rate-limit a
+        /// burst of range requests and answer none of them, which says
+        /// everything about the burst and nothing about the files.
+        case unproven(String)
         case reachable
     }
 
@@ -166,6 +173,16 @@ struct StreamProbe: Equatable, Sendable {
 
     var isReachable: Bool { verdict == .reachable }
 
+    /// Whether this source is still worth opening. Only a host's own refusal
+    /// takes a source out of the running; everything else is worth a try,
+    /// because the player has a queue to fall through if it is wrong.
+    var isWorthTrying: Bool {
+        switch verdict {
+        case .reachable, .unproven, .pending: true
+        case .unreachable: false
+        }
+    }
+
     /// The short line the source row shows once its test is in.
     var summary: String? {
         switch verdict {
@@ -173,6 +190,10 @@ struct StreamProbe: Equatable, Sendable {
             return nil
         case .unreachable(let reason):
             return reason
+        case .unproven:
+            // Not worth alarming anyone with: the source may well be fine, and
+            // saying "Timed out" on a row that then plays is just wrong.
+            return "Untested"
         case .reachable:
             var parts: [String] = []
             if let megabitsPerSecond {
@@ -216,19 +237,51 @@ struct StreamProber: Sendable {
                 return probe
             }
             guard (200..<400).contains(http.statusCode) else {
-                probe.verdict = .unreachable("HTTP \(http.statusCode)")
+                probe.verdict = Self.verdict(forStatus: http.statusCode)
                 return probe
             }
             probe.verdict = .reachable
             probe.byteSize = Self.totalSize(from: http)
+            // Noted so the link check before playback doesn't ask this same
+            // host the same question all over again.
+            await StreamProbeLedger.shared.record(url)
             // The body is not wanted; dropping the iterator ends the transfer.
             _ = bytes
         } catch is CancellationError {
             probe.verdict = .pending
         } catch {
-            probe.verdict = .unreachable(Self.reason(for: error))
+            probe.verdict = Self.verdict(for: error)
         }
         return probe
+    }
+
+    /// What a status code says about the *link*.
+    ///
+    /// Only the codes that name the link as the problem take a source out of
+    /// the running. 405 and 416 are refusals of the probe's own range request,
+    /// 429 is a host asking for less traffic, and 5xx is a host having a bad
+    /// minute — a source behind any of those may play perfectly.
+    static func verdict(forStatus status: Int) -> StreamProbe.Verdict {
+        switch status {
+        case 200..<400: .reachable
+        case 401, 403: .unreachable("Link expired")
+        case 404, 410: .unreachable("Gone")
+        case 429: .unproven("Host busy")
+        default: .unproven("HTTP \(status)")
+        }
+    }
+
+    /// The same question of a transport error. A timeout is the important one:
+    /// it is the most common answer from a rate-limited host and the least
+    /// informative about the file.
+    static func verdict(for error: Error) -> StreamProbe.Verdict {
+        switch (error as NSError).code {
+        case NSURLErrorTimedOut: .unproven("No answer")
+        case NSURLErrorNetworkConnectionLost: .unproven("Connection lost")
+        case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed: .unreachable("Host not found")
+        case NSURLErrorNotConnectedToInternet: .unreachable("Offline")
+        default: .unproven(reason(for: error))
+        }
     }
 
     /// Pulls a slice of the real file and times it. Run one at a time, or the
@@ -336,9 +389,15 @@ final class StreamAutoSelector: ObservableObject {
     @Published private(set) var status: Status = .idle
     @Published private(set) var probes: [String: StreamProbe] = [:]
 
-    /// How many results are worth dialling, and how many of those are worth
-    /// the slower speed test.
-    private static let reachLimit = 12
+    /// How many are dialled at once, how many answers are enough to stop
+    /// dialling, and how many of those are worth the slower speed test.
+    ///
+    /// The burst size is the important one. Dialling a dozen links at a debrid
+    /// host in one go is a burst it answers by rate-limiting all of them — the
+    /// list then reads "Timed out" from top to bottom while every one of those
+    /// sources would have played. A few at a time gets answers instead.
+    private static let dialBatch = 4
+    private static let enoughReachable = 4
     private static let measureLimit = 3
 
     /// The whole audition is worth this much of the viewer's time and no more.
@@ -378,7 +437,13 @@ final class StreamAutoSelector: ObservableObject {
         probes = [:]
         ranking = []
 
-        let candidates = Array(streams.filter(\.isPlayable).prefix(Self.reachLimit))
+        // Every playable result is a candidate, in the order the list ranks
+        // them by their own claims — not just the first handful. A list whose
+        // first dozen rows are one dead release is exactly the list that used
+        // to end in "none of these answered" while a working source sat at
+        // number thirteen.
+        let candidates = Self.deduplicated(streams.filter(\.isPlayable))
+            .sorted { Self.claimScore($0) > Self.claimScore($1) }
         guard !candidates.isEmpty else {
             status = .noneUsable
             return
@@ -387,44 +452,70 @@ final class StreamAutoSelector: ObservableObject {
         status = .reaching(done: 0, total: candidates.count)
 
         job = Task { [weak self] in
+            // Unwrapped once, for the whole audition. The task is cancelled
+            // whenever the selector starts again or is asked to stop, so the
+            // reference lives no longer than the work does.
+            guard let selector = self else { return }
             let prober = StreamProber()
             let expiry = Date().addingTimeInterval(Self.deadline)
 
-            // Pass one: who answers.
-            await withTaskGroup(of: (String, StreamProbe).self) { group in
-                for stream in candidates {
-                    let id = stream.id
-                    guard let url = stream.playbackURL else {
-                        // A debrid row has no address to dial yet: it is minted
-                        // when it is played. Unmeasurable is not the same as
-                        // dead, so it stands on its claim rather than being
-                        // dropped from the audition entirely — which is what
-                        // used to leave a debrid-only list with no winner.
-                        group.addTask { (id, StreamProbe(verdict: .reachable)) }
-                        continue
+            // Pass one: who answers. A few at a time, best claims first, and
+            // only until enough of them have answered — so a list of two
+            // hundred rows costs the same wait as a list of eight.
+            var done = 0
+            var reachable: [Stream] = []
+
+            for batch in candidates.chunks(of: Self.dialBatch) {
+                guard !Task.isCancelled else { return }
+                if reachable.count >= Self.enoughReachable || Date() >= expiry { break }
+
+                await withTaskGroup(of: (String, StreamProbe).self) { group in
+                    for stream in batch {
+                        let id = stream.id
+                        guard let url = stream.playbackURL else {
+                            // A debrid row has no address to dial yet: it is
+                            // minted when it is played. Unmeasurable is not the
+                            // same as dead, so it stands on its claim rather
+                            // than being dropped from the audition entirely —
+                            // which is what used to leave a debrid-only list
+                            // with no winner.
+                            group.addTask { (id, StreamProbe(verdict: .reachable)) }
+                            continue
+                        }
+                        let headers = stream.behaviorHints.requestHeaders
+                        group.addTask { (id, await prober.reach(url: url, headers: headers)) }
                     }
-                    let headers = stream.behaviorHints.requestHeaders
-                    group.addTask { (id, await prober.reach(url: url, headers: headers)) }
+
+                    for await (id, probe) in group {
+                        guard !Task.isCancelled else { return }
+                        done += 1
+                        selector.probes[id] = probe
+                        selector.status = .reaching(done: done, total: candidates.count)
+                    }
                 }
 
-                var done = 0
-                for await (id, probe) in group {
-                    guard let self, !Task.isCancelled else { return }
-                    done += 1
-                    self.probes[id] = probe
-                    self.status = .reaching(done: done, total: candidates.count)
-                }
+                guard !Task.isCancelled else { return }
+                reachable = candidates.filter { selector.probes[$0.id]?.isReachable == true }
             }
 
-            guard let self, !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return }
 
-            let reachable = candidates.filter { self.probes[$0.id]?.isReachable == true }
-            guard !reachable.isEmpty else {
-                self.status = .noneUsable
+            // Nothing answered is not the same as nothing works. A host that
+            // rate-limits a probe still serves a player, so rather than
+            // stopping at a wall of "none of these answered", the best source
+            // that was never actually refused is opened — and if it turns out
+            // to be wrong, the player falls through the rest of the ranking.
+            let contenders = reachable.isEmpty
+                ? candidates.filter { selector.probes[$0.id]?.isWorthTrying ?? true }
+                : reachable
+            guard !contenders.isEmpty else {
+                selector.status = .noneUsable
                 return
             }
 
             // Pass two: how fast, for the ones whose claims are worth testing.
+            // Only the ones that actually answered are worth timing; timing a
+            // source that never replied just spends the deadline twice.
             let shortlist = reachable
                 .sorted { Self.claimScore($0) > Self.claimScore($1) }
                 .prefix(Self.measureLimit)
@@ -435,13 +526,13 @@ final class StreamAutoSelector: ObservableObject {
                 // the picture on a good-enough answer than to keep a viewer
                 // waiting for a perfect one.
                 guard !Task.isCancelled, Date() < expiry, let url = stream.playbackURL else { break }
-                self.status = .measuring(name: stream.headline)
+                selector.status = .measuring(name: stream.headline)
                 let megabits = await prober.measureThroughput(
                     url: url,
                     headers: stream.behaviorHints.requestHeaders
                 )
                 guard !Task.isCancelled else { return }
-                self.probes[stream.id]?.megabitsPerSecond = megabits
+                selector.probes[stream.id]?.megabitsPerSecond = megabits
             }
 
             guard !Task.isCancelled else { return }
@@ -449,14 +540,14 @@ final class StreamAutoSelector: ObservableObject {
             // Ranked rather than just maximised, because everything below the
             // winner is the queue the player falls back through when the
             // winner dies mid-film.
-            let ordered = reachable.sorted { self.finalScore(for: $0) > self.finalScore(for: $1) }
+            let ordered = contenders.sorted { selector.finalScore(for: $0) > selector.finalScore(for: $1) }
             guard let winner = ordered.first else {
-                self.status = .noneUsable
+                selector.status = .noneUsable
                 return
             }
 
-            self.ranking = ordered
-            self.status = .chose(winner)
+            selector.ranking = ordered
+            selector.status = .chose(winner)
             onChoice(winner)
         }
     }
@@ -465,6 +556,23 @@ final class StreamAutoSelector: ObservableObject {
         job?.cancel()
         job = nil
         if isRunning { status = .cancelled }
+    }
+
+    /// One row per actual source.
+    ///
+    /// Addons repeat themselves — the same file behind the same address, listed
+    /// once per tracker, per proxy, or per cache that has it. Dialling each
+    /// copy asks the same host the same question several times over, which is
+    /// both the slowest way to fill the list and the fastest way to be
+    /// rate-limited by it.
+    static func deduplicated(_ streams: [Stream]) -> [Stream] {
+        var seen = Set<String>()
+        return streams.filter { stream in
+            let key = stream.playbackURL?.absoluteString
+                ?? stream.infoHash?.lowercased()
+                ?? "\(stream.addonName)|\(stream.headline)|\(stream.detailLine ?? "")"
+            return seen.insert(key).inserted
+        }
     }
 
     /// What the result claims about itself, before anything has been dialled.
@@ -479,7 +587,7 @@ final class StreamAutoSelector: ObservableObject {
     /// that can't sustain its own bitrate is still marked down to the quality
     /// it can actually carry, and a slow first byte breaks ties.
     private func finalScore(for stream: Stream) -> Double {
-        guard let probe = probes[stream.id], probe.isReachable else { return -.infinity }
+        guard let probe = probes[stream.id], probe.isWorthTrying else { return -.infinity }
 
         let claimed = stream.advertisedQuality
         var effective = claimed
@@ -515,10 +623,26 @@ final class StreamAutoSelector: ObservableObject {
             score -= 1
         }
 
+        // And a source that answered is preferred to one that never did,
+        // whatever either of them claims.
+        if !probe.isReachable { score -= 50 }
+
         if let seconds = probe.responseSeconds {
             score -= min(seconds, 8) * 2
         }
 
         return score
+    }
+}
+
+
+extension Array {
+    /// Walks the array in fixed-size groups, so a burst of network calls can be
+    /// let out a few at a time instead of all at once.
+    fileprivate func chunks(of size: Int) -> [[Element]] {
+        guard size > 0 else { return [self] }
+        return stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
+        }
     }
 }

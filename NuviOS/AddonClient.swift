@@ -451,7 +451,21 @@ struct Stream: Decodable, Identifiable, Equatable {
     /// The bold line of a row. Addons put the quality either in `name` or in
     /// the first line of `title`.
     var headline: String {
-        let candidates = [name, title?.split(separator: "\n").first.map(String.init), description]
+        // An addon that puts nothing but its own name in `name` — AIOStreams
+        // does — gives a list where every row is called the same thing and
+        // nothing on screen says which release is which. Where that happens the
+        // file's own name is the headline, and the addon's name stays where it
+        // belongs, on the badge line.
+        let named = name?.trimmed.nilWhenEmpty
+        let isBadgeOnly = named.map { $0.caseInsensitiveCompare(addonName) == .orderedSame } ?? false
+
+        let candidates = [
+            isBadgeOnly ? nil : named,
+            title?.split(separator: "\n").first.map(String.init),
+            behaviorHints.filename,
+            description?.split(separator: "\n").first.map(String.init),
+            named
+        ]
         for candidate in candidates {
             if let value = candidate?.trimmed.nilWhenEmpty { return value }
         }
@@ -466,7 +480,11 @@ struct Stream: Decodable, Identifiable, Equatable {
             .map { String($0).trimmed }
             .filter { !$0.isEmpty }
             .joined(separator: "  ·  ")
-        return body?.nilWhenEmpty
+        if let body = body?.nilWhenEmpty, body != headline { return body }
+
+        // Nothing but a headline is no way to tell two rows apart, so the
+        // filename stands in when the addon sent one and said nothing else.
+        return behaviorHints.filename?.trimmed.nilWhenEmpty.flatMap { $0 == headline ? nil : $0 }
     }
 }
 

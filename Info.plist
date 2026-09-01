@@ -14,7 +14,7 @@
 	     private half lives in the login keychain of whoever cuts releases and
 	     is never committed; see distribution/README.md. -->
 	<key>SUPublicEDKey</key>
-	<string>2dlMo/jfxlp4u2SCjy5HqVFfjfHty8+milnNEggaONk=</string>
+	<string>EOsbhqovyhw3Gfj1adfVf2+WVKzpCa431rVvS4vOaaM=</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUScheduledCheckInterval</key>

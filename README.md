@@ -3,7 +3,7 @@
   <h1>NuviOS</h1>
 
   <p>
-    The unofficial Apple port of Nuvio — iPhone, iPad, Apple TV and Mac, one SwiftUI app, one codebase.
+    The unofficial Apple port of <a href="https://nuvio.tv">Nuvio</a> — iPhone, iPad, Apple TV and Mac, one SwiftUI app, one codebase.
     <br />
     Bring your own sources. NuviOS turns them into a library with artwork, subtitles, and your place saved on every screen.
   </p>

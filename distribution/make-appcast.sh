@@ -3,6 +3,9 @@
 #
 # Usage: ./make-appcast.sh path/to/NuvioOS-1.1.dmg v1.1
 #
+# The release notes Sparkle shows in its update dialog come from
+# release-notes/<version>.md, which has to exist before a release can be cut.
+#
 # The tag is the GitHub release the DMG is uploaded to. It has to be pinned
 # rather than left as "latest": the appcast keeps every past entry, and a
 # `latest/download` URL would silently re-point old versions at the newest
@@ -26,6 +29,21 @@ staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
 cp "$dmg" "$staging/"
 
+# Sparkle shows whatever it finds in the appcast entry's description, and
+# generate_appcast fills that from a notes file sitting next to the archive
+# under the same basename. Without one the update dialog is a bare version
+# number and an Install button, which tells nobody what they are installing.
+base="$(basename "$dmg")"
+version="${base#NuvioOS-}"
+version="${version%.dmg}"
+notes="$here/release-notes/$version.md"
+if [ ! -f "$notes" ]; then
+    echo "no release notes at $notes" >&2
+    echo "Write them first — the update dialog reads from that file." >&2
+    exit 1
+fi
+cp "$notes" "$staging/${base%.dmg}.md"
+
 generate_appcast="$(command -v generate_appcast || true)"
 if [ -z "$generate_appcast" ]; then
     generate_appcast="$(find ~/Library/Developer/Xcode/DerivedData \
@@ -45,7 +63,11 @@ fi
 # hide the update from exactly the machines it was lowered for.
 rm -f "$here/appcast.xml"
 
+# --embed-release-notes puts the notes inline in the feed. The alternative is
+# a sparkle:releaseNotesLink to a separately hosted file, and only appcast.xml
+# is published, so a linked file would 404 for every user.
 "$generate_appcast" \
+    --embed-release-notes \
     --download-url-prefix "https://github.com/NuvioApple/NuviOS/releases/download/$tag/" \
     -o "$here/appcast.xml" \
     "$staging"

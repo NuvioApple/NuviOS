@@ -57,21 +57,28 @@ profile name `make-dmg.sh --notarize` expects.
    `--notarize` for a local test build — it will run on this machine but not on
    anyone else's.
 
-3. **Sign the feed.**
+3. **Write the release notes.** `release-notes/<version>.md` — this is what
+   Sparkle shows in the update dialog, so write it for the person deciding
+   whether to install, not as a changelog. The next step refuses to run
+   without it.
+
+4. **Sign the feed.**
 
    ```bash
    ./make-appcast.sh NuvioOS-<version>.dmg v<version>
    ```
 
-   Signs the DMG with the private key and rewrites `appcast.xml`. The tag is
+   Signs the DMG with the private key and rewrites `appcast.xml`, with the
+   notes embedded inline — they are served from the feed itself, because
+   `appcast.xml` is the only file in this directory that gets published. The tag is
    the GitHub release the DMG will be uploaded to, and must match it exactly —
    it is baked into the download URL for this version forever.
 
-4. **Publish.** Upload the DMG to the GitHub release, then commit the
+5. **Publish.** Upload the DMG to the GitHub release, then commit the
    regenerated `appcast.xml` — `SUFeedURL` serves it from `main`, so the
    release is not live to existing installs until that commit lands.
 
-Order matters in step 4: if the appcast is committed before the DMG is
+Order matters in the last step: if the appcast is committed before the DMG is
 uploaded, clients will find the update and fail to download it.
 
 ## Feed URL

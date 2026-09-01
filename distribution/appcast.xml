@@ -4,10 +4,14 @@
         <title>NuviOS</title>
         <item>
             <title>1.1.1</title>
-            <pubDate>Tue, 01 Sep 2026 07:19:33 +0200</pubDate>
+            <pubDate>Tue, 01 Sep 2026 07:22:29 +0200</pubDate>
             <sparkle:version>3</sparkle:version>
             <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[### Bug fixes
+
+- Continue Watching is now kept separately for each profile.
+]]></description>
             <enclosure url="https://github.com/NuvioApple/NuviOS/releases/download/v1.1.1/NuvioOS-1.1.1.dmg" length="71633297" type="application/octet-stream" sparkle:edSignature="RxSZ6Z1nu3jev5hfbzXG8TWARuGcSrGBp7pCWjObwKdDInqUACtuC7HTTFzw++NeknT6z9T80Zwv2PEtgBAwDQ=="/>
         </item>
     </channel>

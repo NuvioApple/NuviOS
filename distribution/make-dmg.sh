@@ -35,6 +35,37 @@ fi
 build="$here/build"
 rm -rf "$build"
 mkdir -p "$build"
+log="$build/xcodebuild.log"
+
+# xcodebuild reports no percentage, so we derive one: every run records how
+# many output lines each phase produced, and the next run counts against that.
+# The first run on a machine has no baseline and shows a line count instead.
+# Full output always lands in the log, so nothing is lost by not printing it.
+progress_dir="$here/.progress"
+mkdir -p "$progress_dir"
+
+# Reads a command's output on stdin, prints a single updating progress line,
+# and appends everything to $log.
+progress() {
+    local label="$1"
+    local baseline="$progress_dir/$label"
+    local total=0
+    [ -f "$baseline" ] && total="$(cat "$baseline")"
+    local n=0 pct=0
+    while IFS= read -r line; do
+        printf '%s\n' "$line" >> "$log"
+        n=$((n + 1))
+        if [ "$total" -gt 0 ]; then
+            pct=$((n * 100 / total))
+            [ "$pct" -gt 99 ] && pct=99
+            printf '\r    [%3d%%] %s' "$pct" "$label"
+        else
+            printf '\r    [%5d lines] %s (no baseline yet)' "$n" "$label"
+        fi
+    done
+    printf '\r    [100%%] %s%*s\n' "$label" 20 ''
+    echo "$n" > "$baseline"
+}
 
 archive="$build/NuviOS.xcarchive"
 export_dir="$build/export"
@@ -46,7 +77,7 @@ xcodebuild archive \
     -destination 'platform=macOS' \
     -configuration Release \
     -archivePath "$archive" \
-    | tail -5
+    | progress archive
 
 # `developer-id` is the method for a DMG distributed outside the App Store.
 # signingCertificate pins it to the Developer ID cert so the export fails
@@ -74,7 +105,7 @@ xcodebuild -exportArchive \
     -archivePath "$archive" \
     -exportOptionsPlist "$build/ExportOptions.plist" \
     -exportPath "$export_dir" \
-    | tail -5
+    | progress export
 
 app="$export_dir/NuviOS.app"
 [ -d "$app" ] || { echo "export produced no NuviOS.app" >&2; exit 1; }
@@ -97,6 +128,13 @@ hdiutil create \
     -srcfolder "$stage" \
     -ov -format UDZO \
     "$dmg" > /dev/null
+
+# Notarizing and stapling do not sign the disk image itself — they only attach
+# a ticket. Without this, Gatekeeper has nothing to evaluate before the image
+# is mounted and the verify step below fails with "no usable signature". Sign
+# before submitting so the notarization ticket covers this signature.
+echo "==> Signing the disk image"
+codesign --force --sign "Developer ID Application" --timestamp "$dmg"
 
 if [ "$notarize" -eq 1 ]; then
     echo "==> Notarizing (this takes a few minutes)"

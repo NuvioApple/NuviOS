@@ -96,7 +96,13 @@ struct ContentView: View {
         }
         // Addons are profile-scoped, so the stream sources follow whoever is
         // watching — and are re-read when the account itself changes.
-        .task(id: "\(sessionIdentity)|\(profiles.current.effectiveAddonProfileID)") {
+        //
+        // Keyed on the profile's own index as well as the addon one: two
+        // profiles sharing the primary's addons have the same
+        // `effectiveAddonProfileID`, so switching between them left this task
+        // un-run and the watch-progress writer still pointed at the profile
+        // before it.
+        .task(id: "\(sessionIdentity)|\(profiles.current.effectiveAddonProfileID)|\(profiles.current.index)") {
             await addons.refresh(session: session, profile: profiles.current, force: true)
             // The debrid keys are profile-scoped in the same way, and are read
             // off the account rather than typed in here: whatever the viewer
@@ -141,7 +147,9 @@ struct ContentView: View {
         await WatchProgressSync.shared.configure(
             configuration: configuration,
             accessToken: token,
-            profileID: profiles.current.effectiveAddonProfileID
+            // The real profile, not `effectiveAddonProfileID`. Two profiles
+            // can share one addon list; they never share a place in a film.
+            profileID: profiles.current.index
         )
     }
 

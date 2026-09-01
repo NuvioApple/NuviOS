@@ -3,8 +3,48 @@ import Foundation
 /// Where each title was left off, so reopening one resumes rather than
 /// restarts. Local only — the backend's own watch history is a separate
 /// concern, and a position is worth keeping even for a guest.
+///
+/// Scoped to a profile. One account can be several people, and what one of
+/// them is part-way through is not the others' business.
 enum PlaybackProgress {
-    private static let key = "nuvio.playback.progress"
+    /// Positions are per profile, the way the library is: two people sharing
+    /// an account are not sharing a place in a film. `activate(profile:)` sets
+    /// which one is being written, and is called wherever the library is
+    /// activated.
+    private static func key(profile: Int) -> String { "nuvio.playback.progress.\(profile)" }
+
+    /// The profile currently watching. Defaults to the primary so a position
+    /// recorded before anyone switches still lands somewhere sensible.
+    private static var profileIndex = Profile.primaryIndex
+
+    /// The single shared store this used to write, kept only long enough to
+    /// hand its contents to the primary profile once.
+    private static let legacyKey = "nuvio.playback.progress"
+    private static let legacyMigratedKey = "nuvio.playback.progress.migrated"
+
+    static func activate(profile: Profile) {
+        profileIndex = profile.index
+        migrateLegacyStoreIfNeeded()
+    }
+
+    /// Everything watched before positions were split by profile belongs to
+    /// whoever was using the app then, and the primary profile is the only
+    /// defensible guess. Runs once; the old key is left in place rather than
+    /// deleted, so a downgrade doesn't lose anything.
+    private static func migrateLegacyStoreIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: legacyMigratedKey) else { return }
+        defaults.set(true, forKey: legacyMigratedKey)
+
+        guard let data = defaults.data(forKey: legacyKey),
+              let decoded = try? JSONDecoder().decode([String: Entry].self, from: data),
+              !decoded.isEmpty
+        else { return }
+
+        let destination = key(profile: Profile.primaryIndex)
+        guard defaults.data(forKey: destination) == nil else { return }
+        defaults.set(data, forKey: destination)
+    }
 
     /// Anything past this is treated as watched, and its position dropped —
     /// resuming four seconds before the credits helps nobody.
@@ -79,7 +119,7 @@ enum PlaybackProgress {
     }
 
     private static func all() -> [String: Entry] {
-        guard let data = UserDefaults.standard.data(forKey: key),
+        guard let data = UserDefaults.standard.data(forKey: key(profile: profileIndex)),
               let decoded = try? JSONDecoder().decode([String: Entry].self, from: data)
         else { return [:] }
         return decoded
@@ -96,6 +136,6 @@ enum PlaybackProgress {
             for key in oldest { trimmed.removeValue(forKey: key) }
         }
         guard let data = try? JSONEncoder().encode(trimmed) else { return }
-        UserDefaults.standard.set(data, forKey: key)
+        UserDefaults.standard.set(data, forKey: key(profile: profileIndex))
     }
 }

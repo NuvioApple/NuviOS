@@ -267,13 +267,16 @@ struct PosterCard: View {
     /// Titles whose addon sends no backdrop keep the poster and simply crop to
     /// the wider shape rather than popping to a grey well.
     private var artworkURL: URL? {
-        #if os(macOS)
-        if isHovering, let background = item.background?.trimmed, !background.isEmpty {
-            return AddonClient.resolve(background, relativeTo: addonBaseURL)
-        }
-        #endif
-        return AddonClient.resolve(item.poster, relativeTo: addonBaseURL)
+        AddonClient.resolve(item.poster, relativeTo: addonBaseURL)
     }
+
+    #if os(macOS)
+    /// The landscape art, when the addon sent any.
+    private var backdropURL: URL? {
+        guard let background = item.background?.trimmed, !background.isEmpty else { return nil }
+        return AddonClient.resolve(background, relativeTo: addonBaseURL)
+    }
+    #endif
 
     private var artworkWidth: CGFloat {
         #if os(macOS)
@@ -284,9 +287,7 @@ struct PosterCard: View {
     }
 
     private var poster: some View {
-        RemoteImage(url: artworkURL) {
-            AnyView(fallback)
-        }
+        artwork
         .frame(width: artworkWidth, height: height)
         .clipShape(RoundedRectangle(cornerRadius: Phone.posterRadius, style: .continuous))
         .overlay {
@@ -309,10 +310,55 @@ struct PosterCard: View {
         }
         .shadow(color: .black.opacity(0.45), radius: 8, y: 4)
         #if os(macOS)
-        .animation(.easeInOut(duration: 0.22), value: isHovering)
+        // Slower than a click's worth of feedback and eased at both ends: the
+        // card is drifting open under a pointer that may only be passing over
+        // it, not answering a press.
+        .animation(.easeInOut(duration: 0.42), value: isHovering)
         .onHover { hovering in isHovering = hovering }
         #endif
     }
+
+    /// Poster and backdrop are drawn as one stack and cross-faded, rather than
+    /// one image view whose URL changes.
+    ///
+    /// Swapping the URL is what made the hover snap: the poster vanishes the
+    /// instant the pointer lands, and the backdrop pops in whenever the
+    /// network happens to deliver it — so the card blinks through its own
+    /// placeholder on the way. Holding both and moving opacity means the
+    /// backdrop is already decoded by the time it is asked to appear, and the
+    /// two dissolve into each other instead.
+    @ViewBuilder
+    private var artwork: some View {
+        #if os(macOS)
+        // Both images are pinned to the card's own size and clipped there.
+        // Without that the 16:9 backdrop — which fills, and so grows to
+        // whatever it is offered — sizes the stack to its own filled
+        // dimensions, and the poster stacked with it fills that larger
+        // proposal too, rendering blown up inside the card.
+        ZStack {
+            RemoteImage(url: artworkURL) { AnyView(fallback) }
+                .frame(width: artworkWidth, height: height)
+                .clipped()
+                .opacity(isShowingBackdrop ? 0 : 1)
+
+            if let backdropURL {
+                RemoteImage(url: backdropURL) { AnyView(EmptyView()) }
+                    .frame(width: artworkWidth, height: height)
+                    .clipped()
+                    .opacity(isShowingBackdrop ? 1 : 0)
+            }
+        }
+        .frame(width: artworkWidth, height: height)
+        #else
+        RemoteImage(url: artworkURL) { AnyView(fallback) }
+        #endif
+    }
+
+    #if os(macOS)
+    /// A title with no backdrop still widens, but keeps its poster rather than
+    /// fading to nothing.
+    private var isShowingBackdrop: Bool { isHovering && backdropURL != nil }
+    #endif
 
     /// Addons without poster art still have to be tappable and identifiable,
     /// so the fallback carries the name rather than a broken-image well.

@@ -108,6 +108,7 @@ struct ProfileScreen: View {
                             withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                                 profiles.select(profile)
                                 library.activate(profile: profile)
+                                PlaybackProgress.activate(profile: profile)
                             }
                         } label: {
                             VStack(spacing: 8) {

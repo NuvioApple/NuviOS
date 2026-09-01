@@ -65,10 +65,15 @@ enum ContinueWatchingLoader {
         if case .signedIn = session.state,
            let configuration = await session.configuration,
            let token = await session.validAccessToken() {
+            // `profile.index`, deliberately not `effectiveAddonProfileID`:
+            // that one redirects a profile borrowing the primary's addons back
+            // to profile 1, which is right for *addons* and wrong for watch
+            // history. Sharing a source list is not sharing a place in a film,
+            // and using it here is what let one profile see another's shelf.
             entries = (try? await WatchProgressDirectory.inProgress(
                 configuration: configuration,
                 accessToken: token,
-                profileID: profile.effectiveAddonProfileID
+                profileID: profile.index
             )) ?? []
 
             // The position the backend holds is the truth about where this
@@ -90,7 +95,6 @@ enum ContinueWatchingLoader {
         // rows at all, and a signed-in viewer whose progress lives in Trakt or
         // Simkl rather than the backend has none either — but both have this.
         entries = merged(entries, with: localEntries())
-        print("[continue-watching] \(entries.count) title(s) to show")
         guard !entries.isEmpty else { return [] }
 
         return await resolve(

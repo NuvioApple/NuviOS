@@ -756,6 +756,7 @@ struct ProfileSwitcherSheet: View {
                         Button {
                             profiles.select(profile)
                             library.activate(profile: profile)
+                            PlaybackProgress.activate(profile: profile)
                             dismiss()
                         } label: {
                             VStack(spacing: 8) {

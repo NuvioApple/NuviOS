@@ -97,6 +97,11 @@ final class HomeViewModel: ObservableObject {
     /// Which profile's addons are currently on screen, so a profile switch
     /// can be told apart from an ordinary re-appearance.
     private var loadedProfileID: Int?
+    /// The profile itself, not its addon stand-in. Two profiles sharing the
+    /// primary's addons collapse to the same `effectiveAddonProfileID`, so that
+    /// value alone cannot tell a switch between them from a re-appearance —
+    /// which left the second profile looking at the first one's resume shelf.
+    private var loadedProfileIndex: Int?
     /// The addon list behind the loaded rows, kept so the resume shelf can be
     /// rebuilt without resolving it again.
     private var loadedAddonURLs: [String] = []
@@ -109,10 +114,17 @@ final class HomeViewModel: ObservableObject {
         await load(session: session, profile: profile)
     }
 
-    /// Reloads only when the profile actually changed. Profiles can share an
-    /// addon list, so this compares the *effective* profile.
+    /// Reloads when the profile actually changed — by either measure.
+    ///
+    /// The addon profile decides which catalogs to fetch; the profile's own
+    /// index decides whose watch history the resume shelf belongs to. Two
+    /// profiles sharing an addon list differ only in the second, so both are
+    /// compared: skipping on the addon id alone leaves one profile showing the
+    /// other's Continue Watching.
     func loadIfProfileChanged(session: AppSession, profile: Profile) async {
-        guard hasLoaded, loadedProfileID != profile.effectiveAddonProfileID else { return }
+        guard hasLoaded else { return }
+        guard loadedProfileID != profile.effectiveAddonProfileID
+            || loadedProfileIndex != profile.index else { return }
         await load(session: session, profile: profile)
     }
 
@@ -146,6 +158,7 @@ final class HomeViewModel: ObservableObject {
         defer { isLoading = false }
 
         loadedProfileID = profile.effectiveAddonProfileID
+        loadedProfileIndex = profile.index
         let addonURLs = await resolveAddonURLs(session: session, profile: profile)
         loadedAddonURLs = addonURLs
         let manifests = await manifests(for: addonURLs)

@@ -95,12 +95,14 @@ struct RootView: View {
         .task {
             await profiles.sync(session: session)
             library.activate(profile: profiles.current)
+            PlaybackProgress.activate(profile: profiles.current)
             await model.loadIfNeeded(session: session, profile: profiles.current)
         }
         // Switching profile can switch addon lists, so the shelves reload and
         // the list follows the profile.
         .task(id: profiles.currentIndex) {
             library.activate(profile: profiles.current)
+            PlaybackProgress.activate(profile: profiles.current)
             await model.loadIfProfileChanged(session: session, profile: profiles.current)
         }
     }

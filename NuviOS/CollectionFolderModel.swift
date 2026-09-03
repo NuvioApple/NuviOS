@@ -94,17 +94,22 @@ final class CollectionFolderModel: ObservableObject {
                     type: catalog.type,
                     catalogID: catalog.catalogID
                 )
+                let label = Self.label(
+                    catalog: manifestCatalog,
+                    fallbackID: catalog.catalogID,
+                    type: catalog.type,
+                    genre: catalog.genre
+                )
+                // Streaming-service marketing tabs ("Apple TV+ Top 10", …)
+                // are hidden visually, same as the folder tiles themselves —
+                // see CollectionFolder.isMarketingTile.
+                guard !label.localizedCaseInsensitiveContains("top 10") else { return nil }
                 return (
                     source,
                     entry,
                     FolderTab(
                         id: "\(catalog.addonID)|\(catalog.type)|\(catalog.catalogID)|\(catalog.genre ?? "")",
-                        label: Self.label(
-                            catalog: manifestCatalog,
-                            fallbackID: catalog.catalogID,
-                            type: catalog.type,
-                            genre: catalog.genre
-                        ),
+                        label: label,
                         addonBaseURL: entry.baseURL
                     )
                 )
@@ -207,7 +212,12 @@ final class CollectionFolderModel: ObservableObject {
     ) -> String {
         let base = catalog?.name?.trimmed.nilIfBlank
             ?? fallbackID.replacingOccurrences(of: "-", with: " ").capitalized
-        guard let genre = genre?.trimmed, !genre.isEmpty else { return base }
+        guard let genre = genre?.trimmed, !genre.isEmpty,
+              // Some addons hand back a literal "None" as the extra value
+              // for "no genre filter" rather than omitting it — that reads
+              // as a real genre unless it's caught here.
+              genre.localizedCaseInsensitiveCompare("none") != .orderedSame
+        else { return base }
         return base.localizedCaseInsensitiveContains(genre) ? base : "\(base) · \(genre)"
     }
 }

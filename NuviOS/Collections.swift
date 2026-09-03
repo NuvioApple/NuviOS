@@ -67,6 +67,10 @@ struct CollectionFolder: Identifiable, Equatable {
     var addonSources: [CollectionSource] { sources.filter { $0.addonCatalog != nil } }
     /// A folder whose every source needs TMDB or Trakt can't be opened here.
     var isResolvable: Bool { !addonSources.isEmpty }
+    /// Streaming-service marketing tiles ("Apple TV+ Top 10", "Netflix Top
+    /// 10", …) some collections carry — hidden visually, the folder data
+    /// itself is untouched.
+    var isMarketingTile: Bool { title.localizedCaseInsensitiveContains("top 10") }
 }
 
 /// Named `MediaCollection` because `Collection` is a standard-library protocol.
@@ -79,8 +83,10 @@ struct MediaCollection: Identifiable, Equatable {
     let folders: [CollectionFolder]
 
     /// Folders nothing can be loaded for are dropped: Android shows the tile
-    /// and then an empty screen, which is worse than not offering it.
-    var visibleFolders: [CollectionFolder] { folders.filter(\.isResolvable) }
+    /// and then an empty screen, which is worse than not offering it. Marketing
+    /// tiles are dropped too, so a shelf with only those doesn't show up as a
+    /// header over an empty row.
+    var visibleFolders: [CollectionFolder] { folders.filter { $0.isResolvable && !$0.isMarketingTile } }
 }
 
 // MARK: - Wire format

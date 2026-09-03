@@ -5,12 +5,20 @@ import SwiftUI
 struct MetaDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.palette) private var palette
+    @EnvironmentObject private var tmdb: TmdbSettings
 
     let selection: MetaSelection
 
     @State private var detail: MetaDetail?
     @State private var failed = false
     @State private var isPickingStream = false
+    /// The episode the viewer picked from the inline list, if any.
+    @State private var playingVideo: MetaVideo?
+    @State private var chosenSeason: Int?
+    /// Photos for the cast list, keyed by name — `nil` until TMDB answers (or
+    /// there's no key to ask it with), so the bubbles fall back to monograms
+    /// rather than waiting on a blank space.
+    @State private var castPhotos: [String: URL] = [:]
 
     private var item: MetaItem { selection.item }
 
@@ -46,6 +54,7 @@ struct MetaDetailView: View {
                         facts(metrics)
                         actions(metrics)
                         synopsis(metrics)
+                        episodes(metrics)
                         credits(metrics)
                         factSheet(metrics)
                     }
@@ -60,6 +69,9 @@ struct MetaDetailView: View {
         .platformFullScreenCover(isPresented: $isPickingStream) {
             StreamPicker(selection: selection, detail: detail)
         }
+        .platformFullScreenCover(item: $playingVideo) { video in
+            StreamPicker(selection: selection, detail: detail, video: video)
+        }
         #if os(tvOS)
         .onExitCommand { dismiss() }
         #endif
@@ -73,7 +85,41 @@ struct MetaDetailView: View {
             } catch {
                 failed = true
             }
+            await loadCastPhotos()
         }
+    }
+
+    /// The addon's cast is just names, so photos have to be matched back onto
+    /// those names from elsewhere. TMDB's credits (when the viewer has a key
+    /// configured) come first since they're a real, unambiguous match; TMDB
+    /// covers no cast, or names it left out, get an image from Wikipedia
+    /// instead — a key-free name search, so the cast strip has photos even
+    /// with no key set up at all.
+    private func loadCastPhotos() async {
+        let names = detail?.cast.prefix(12) ?? []
+        guard !names.isEmpty else { return }
+
+        var byName: [String: URL] = [:]
+
+        if let members = await CastService.shared.cast(for: item, apiKey: tmdb.effectiveAPIKey) {
+            for member in members where member.profileURL != nil {
+                byName[member.name.lowercased()] = member.profileURL
+            }
+            castPhotos = byName
+        }
+
+        let missing = names.filter { byName[$0.lowercased()] == nil }
+        guard !missing.isEmpty else { return }
+
+        await withTaskGroup(of: (String, URL?).self) { group in
+            for name in missing {
+                group.addTask { (name, await WikipediaCastService.shared.photo(forName: name)) }
+            }
+            for await (name, url) in group {
+                if let url { byName[name.lowercased()] = url }
+            }
+        }
+        castPhotos = byName
     }
 
     // MARK: Backdrop
@@ -168,8 +214,14 @@ struct MetaDetailView: View {
     private func actions(_ metrics: LayoutMetrics) -> some View {
         VStack(alignment: .leading, spacing: metrics.isCompact ? 10 : 16) {
             HStack(spacing: metrics.isCompact ? 12 : 20) {
-                Button(detail?.seasons.isEmpty == false ? "Episodes" : "Play") {
-                    isPickingStream = true
+                Button(playLabel) {
+                    // Series pick up where the inline list leaves off: the
+                    // button plays, it no longer opens a picker.
+                    if let first = firstEpisode {
+                        playingVideo = first
+                    } else {
+                        isPickingStream = true
+                    }
                 }
                 .buttonStyle(
                     NuvioButtonStyle(kind: .prominent, icon: "play.fill", compact: metrics.isCompact)
@@ -211,6 +263,67 @@ struct MetaDetailView: View {
         }
     }
 
+    private var firstEpisode: MetaVideo? {
+        detail?.seasons.first?.episodes.first
+    }
+
+    private var playLabel: String {
+        guard let code = firstEpisode?.code else { return "Play" }
+        return "Play \(code)"
+    }
+
+    // MARK: Episodes
+
+    /// The episode list lives on the page, above the cast, rather than behind
+    /// a modal: picking an episode is the main thing a series page is for.
+    @ViewBuilder
+    private func episodes(_ metrics: LayoutMetrics) -> some View {
+        let seasons = detail?.seasons ?? []
+
+        if !seasons.isEmpty {
+            let active = chosenSeason ?? seasons.first?.season
+            let list = seasons.first { $0.season == active }?.episodes ?? []
+
+            VStack(alignment: .leading, spacing: metrics.isCompact ? 10 : 18) {
+                SectionLabel(text: "Episodes", metrics: metrics)
+
+                if seasons.count > 1 {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: metrics.isCompact ? 8 : 12) {
+                            ForEach(seasons, id: \.season) { season in
+                                SeasonPill(
+                                    label: season.season == 0 ? "Specials" : "Season \(season.season)",
+                                    selected: season.season == active,
+                                    metrics: metrics
+                                ) {
+                                    chosenSeason = season.season
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .scrollClipDisabled()
+                }
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: metrics.isCompact ? 12 : 22) {
+                        ForEach(list) { episode in
+                            EpisodeCard(
+                                episode: episode,
+                                baseURL: selection.addonBaseURL,
+                                metrics: metrics
+                            ) {
+                                playingVideo = episode
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .scrollClipDisabled()
+            }
+        }
+    }
+
     @ViewBuilder
     private func credits(_ metrics: LayoutMetrics) -> some View {
         if let cast = detail?.cast, !cast.isEmpty {
@@ -220,7 +333,7 @@ struct MetaDetailView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: metrics.isCompact ? 10 : 18) {
                         ForEach(cast.prefix(12), id: \.self) { name in
-                            CastBubble(name: name, metrics: metrics)
+                            CastBubble(name: name, photoURL: castPhotos[name.lowercased()], metrics: metrics)
                         }
                     }
                     .padding(.vertical, 4)
@@ -308,11 +421,12 @@ private struct SectionLabel: View {
     }
 }
 
-/// Addons send cast as plain names, so the avatar is a monogram rather than a
-/// broken image well.
+/// Addons send cast as plain names with no photos — `photoURL`, when TMDB has
+/// matched one, is what turns this from a monogram into an actual portrait.
 private struct CastBubble: View {
     @Environment(\.palette) private var palette
     let name: String
+    var photoURL: URL?
     let metrics: LayoutMetrics
 
     private var size: CGFloat { metrics.isCompact ? 60 : 118 }
@@ -322,22 +436,35 @@ private struct CastBubble: View {
         return parts.compactMap { $0.first.map(String.init) }.joined().uppercased()
     }
 
+    @ViewBuilder private var monogram: some View {
+        Text(initials)
+            .font(.system(size: size * 0.34, weight: .bold))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: size, height: size)
+            .background(
+                LinearGradient(
+                    colors: [palette.accent.opacity(0.35), palette.accentVariant.opacity(0.2)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+    }
+
     var body: some View {
         VStack(spacing: metrics.isCompact ? 6 : 12) {
-            Text(initials)
-                .font(.system(size: size * 0.34, weight: .bold))
-                .foregroundStyle(.white.opacity(0.9))
-                .frame(width: size, height: size)
-                .background(
-                    Circle().fill(
-                        LinearGradient(
-                            colors: [palette.accent.opacity(0.35), palette.accentVariant.opacity(0.2)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                )
-                .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 1))
+            Group {
+                // `AsyncImage(url: nil)` reports `.empty`, not `.failure`, so
+                // the monogram fallback only fires on a real load failure —
+                // no photo at all has to be handled up front instead.
+                if let photoURL {
+                    RemoteImage(url: photoURL, contentMode: .fill) { AnyView(monogram) }
+                } else {
+                    monogram
+                }
+            }
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+            .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 1))
 
             Text(name)
                 .font(.system(size: metrics.isCompact ? 11 : 17, weight: .medium))
@@ -346,5 +473,108 @@ private struct CastBubble: View {
                 .multilineTextAlignment(.center)
                 .frame(width: size * 1.35)
         }
+    }
+}
+
+/// A season selector chip. Plain button style so tvOS still draws focus on the
+/// shape rather than a system bezel.
+private struct SeasonPill: View {
+    @Environment(\.palette) private var palette
+    let label: String
+    let selected: Bool
+    let metrics: LayoutMetrics
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: metrics.isCompact ? 13 : 19, weight: .semibold))
+                .foregroundStyle(selected ? .white : .white.opacity(0.72))
+                .padding(.horizontal, metrics.isCompact ? 14 : 22)
+                .padding(.vertical, metrics.isCompact ? 8 : 12)
+                .background(
+                    Capsule().fill(
+                        selected ? palette.accent.opacity(0.85) : Color.white.opacity(0.10)
+                    )
+                )
+                .overlay(Capsule().stroke(.white.opacity(selected ? 0.25 : 0.10), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// One episode: the still, the number and title, and as much of the synopsis
+/// as fits — the card shape the rest of the app already uses for artwork.
+private struct EpisodeCard: View {
+    @Environment(\.palette) private var palette
+    let episode: MetaVideo
+    let baseURL: String
+    let metrics: LayoutMetrics
+    let action: () -> Void
+
+    private var width: CGFloat { metrics.isCompact ? 210 : 380 }
+
+    private var thumbnailURL: URL? {
+        guard let thumbnail = episode.thumbnail?.trimmed, !thumbnail.isEmpty else { return nil }
+        return AddonClient.resolve(thumbnail, relativeTo: baseURL)
+    }
+
+    private var heading: String {
+        [episode.code, episode.title?.trimmed.nilWhenEmpty]
+            .compactMap { $0 }
+            .joined(separator: "  ·  ")
+            .nilWhenEmpty ?? episode.displayTitle
+    }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: metrics.isCompact ? 8 : 12) {
+                ZStack {
+                    RemoteImage(url: thumbnailURL) {
+                        AnyView(
+                            ZStack {
+                                Color.white.opacity(0.05)
+                                Image(systemName: "play.rectangle")
+                                    .font(.system(size: width * 0.14))
+                                    .foregroundStyle(.white.opacity(0.25))
+                            }
+                        )
+                    }
+                    .frame(width: width, height: width * 9 / 16)
+                    .clipped()
+
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: metrics.isCompact ? 30 : 48))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .shadow(radius: 8)
+                }
+                .frame(width: width, height: width * 9 / 16)
+                .clipShape(RoundedRectangle(cornerRadius: metrics.isCompact ? 12 : 18, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: metrics.isCompact ? 12 : 18, style: .continuous)
+                        .stroke(.white.opacity(0.10), lineWidth: 1)
+                )
+
+                Text(heading)
+                    .font(.system(size: metrics.isCompact ? 13 : 19, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                if let overview = episode.overview?.trimmed.nilWhenEmpty {
+                    Text(overview)
+                        .font(.system(size: metrics.isCompact ? 11 : 16))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .frame(width: width, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

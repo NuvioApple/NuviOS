@@ -321,7 +321,7 @@ struct ProfileScreen: View {
                             .padding(12)
                             .glassCard(cornerRadius: 14)
 
-                        Text("Only used when an addon doesn't supply a trailer itself. A free key comes from themoviedb.org → Settings → API.")
+                        Text("Only used when an addon doesn't supply a trailer itself, and to sharpen cast photos on the detail page. A free key comes from themoviedb.org → Settings → API.")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.4))
                             .fixedSize(horizontal: false, vertical: true)

@@ -7,6 +7,24 @@ enum RootTab: Hashable {
     case home, movies, series, search, profile
 }
 
+/// The last press on the shell's bar. A screen pushed inside a tab watches
+/// this and pops itself when its own tab is pressed.
+struct ShellBarPress: Equatable {
+    let tab: RootTab
+    let count: Int
+}
+
+private struct ShellBarPressKey: EnvironmentKey {
+    static let defaultValue = ShellBarPress(tab: .home, count: 0)
+}
+
+extension EnvironmentValues {
+    var shellBarPress: ShellBarPress {
+        get { self[ShellBarPressKey.self] }
+        set { self[ShellBarPressKey.self] = newValue }
+    }
+}
+
 /// The iPhone shell.
 ///
 /// Android Nuvio navigates from a sidebar that expands on focus; a phone has
@@ -29,24 +47,41 @@ struct RootView: View {
     @StateObject private var model = HomeViewModel()
     @State private var selection: RootTab = .home
     @State private var switchingProfile = false
+    /// Bumped every time a destination is picked from the bar, so the screen
+    /// behind it can return to its own root. Pressing Home while inside a
+    /// folder means "take me home", not "you are already on Home".
+    @State private var barPress = ShellBarPress(tab: .home, count: 0)
 
     let subtitle: String
 
+    /// The bar's own binding: it selects the tab, and it records the press.
+    /// SwiftUI hands a tab bar only the new value, and re-picking the tab you
+    /// are already on doesn't change it — so the count is what a screen
+    /// watches, not the tab.
+    private var barSelection: Binding<RootTab> {
+        Binding {
+            selection
+        } set: { tab in
+            selection = tab
+            barPress = ShellBarPress(tab: tab, count: barPress.count + 1)
+        }
+    }
+
     var body: some View {
         ProfileGate {
-            TabView(selection: $selection) {
+            TabView(selection: barSelection) {
                 Tab("Home", systemImage: "play.house.fill", value: RootTab.home) {
-                    BrowseScreen(model: model, filter: nil, title: "Home", showsHero: true)
+                    BrowseScreen(model: model, tab: .home, filter: nil, title: "Home", showsHero: true)
                         .measuringContentViewport()
                 }
 
                 Tab("Movies", systemImage: "film.stack.fill", value: RootTab.movies) {
-                    BrowseScreen(model: model, filter: "movie", title: "Movies", showsHero: false)
+                    BrowseScreen(model: model, tab: .movies, filter: "movie", title: "Movies", showsHero: false)
                         .measuringContentViewport()
                 }
 
                 Tab("Series", systemImage: "tv.fill", value: RootTab.series) {
-                    BrowseScreen(model: model, filter: "series", title: "Series", showsHero: false)
+                    BrowseScreen(model: model, tab: .series, filter: "series", title: "Series", showsHero: false)
                         .measuringContentViewport()
                 }
 
@@ -96,6 +131,7 @@ struct RootView: View {
                     .platformSheetSizing(minWidth: 520, minHeight: 300)
             }
         }
+        .environment(\.shellBarPress, barPress)
         .task {
             await profiles.sync(session: session)
             PlaybackProgress.activate(profile: profiles.current)

@@ -9,11 +9,17 @@ import Combine
 /// which already carries `trailerStreams`/`trailers` — so the home screen
 /// plays trailers out of the box.
 ///
-/// The key is a fallback for addons that don't carry trailers. Upstream
-/// compiles its own in from `local.properties` (`BuildConfig.TMDB_API_KEY`),
-/// which is a build secret this port doesn't have and mustn't ship, so a user
-/// who wants that extra coverage supplies their own. Nothing else in the app
-/// depends on it.
+/// The key is a fallback for addons that don't carry trailers, and now also
+/// sharpens cast photos on the detail page (see Cast.swift). Upstream
+/// compiles its own in from `local.properties` (`BuildConfig.TMDB_API_KEY`);
+/// this port can't ship one to every user the way upstream does, since the
+/// source is public. Whoever builds it, though, can do the same thing for
+/// their own copy: `Secrets.swift` (see `Secrets.example.swift`) is
+/// git-ignored and never reaches the public repo, so a personal key baked in
+/// there works without typing it into Settings on every install. Nothing
+/// else in the app depends on it either way — `effectiveAPIKey` is what
+/// callers actually use, and it falls back to the Settings field when
+/// there's no compiled-in key.
 @MainActor
 final class TmdbSettings: ObservableObject {
     static let shared = TmdbSettings()
@@ -37,6 +43,14 @@ final class TmdbSettings: ObservableObject {
 
     /// The addon path needs no credentials, so the toggle alone decides.
     var canFetchTrailers: Bool { useTrailers }
+
+    /// What TMDB calls should actually use: whatever the viewer typed into
+    /// Settings if they typed anything, otherwise whoever built this copy's
+    /// own compiled-in key (empty in the public repo — see Secrets.swift).
+    var effectiveAPIKey: String {
+        let typed = apiKey.trimmed
+        return typed.isEmpty ? Secrets.tmdbAPIKey : typed
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults

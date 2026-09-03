@@ -14,12 +14,16 @@ struct BrowseScreen: View {
     @EnvironmentObject private var library: LibraryStore
     @ObservedObject var model: HomeViewModel
 
+    /// Which destination this screen is, so a press on that destination in
+    /// the shell's bar can bring it back to its root.
+    let tab: RootTab
     /// `nil` on Home; a Stremio content type on the other tabs.
     let filter: String?
     let title: String
     let showsHero: Bool
 
     @Environment(\.palette) private var palette
+    @Environment(\.shellBarPress) private var barPress
 
     @State private var selected: MetaSelection?
     @State private var openFolder: OpenFolder?
@@ -87,6 +91,14 @@ struct BrowseScreen: View {
             }
             .navigationDestination(item: $openFolder) { open in
                 FolderScreen(open: open, addons: model.addons)
+            }
+            // Pressing Home while a folder is open goes home, rather than
+            // leaving the folder sitting on top of the destination you just
+            // asked for.
+            .onChange(of: barPress) { _, press in
+                guard press.tab == tab else { return }
+                openFolder = nil
+                selected = nil
             }
         }
     }
@@ -504,7 +516,7 @@ private struct BillboardPage: View {
 
     /// Re-runs whenever anything that should start or stop a trailer changes.
     private var trailerTaskID: String {
-        "\(isCurrent)|\(scenePhase == .active)|\(tmdb.canFetchTrailers)|\(tmdb.apiKey.trimmed.isEmpty)|\(hero.item.id)"
+        "\(isCurrent)|\(scenePhase == .active)|\(tmdb.canFetchTrailers)|\(tmdb.effectiveAPIKey.isEmpty)|\(hero.item.id)"
     }
 
     private func manageTrailer() async {
@@ -526,7 +538,7 @@ private struct BillboardPage: View {
         async let resolved = TrailerService.shared.youTubeKey(
             for: hero.item,
             addonBaseURL: hero.addonBaseURL,
-            apiKey: tmdb.apiKey
+            apiKey: tmdb.effectiveAPIKey
         )
         async let beat: Void = Task.sleep(for: .seconds(2.5))
 

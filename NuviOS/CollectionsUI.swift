@@ -225,10 +225,12 @@ struct CollectionShelf: View {
         guard isSettled else { return nil }
         // Until the shelf has been scrolled at all, the eye starts at its
         // leading edge, so that tile stands in for the centred one.
-        return centered ?? collection.folders.first?.id
+        return centered ?? folders.first?.id
     }
 
     private var tileHeight: CGFloat { Phone.posterHeight * 0.82 }
+
+    private var folders: [CollectionFolder] { collection.visibleFolders }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -236,7 +238,7 @@ struct CollectionShelf: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: Phone.posterSpacing) {
-                    ForEach(collection.folders) { folder in
+                    ForEach(folders) { folder in
                         Button { onOpen(folder) } label: {
                             tile(folder)
                         }
@@ -306,6 +308,33 @@ struct CollectionShelf: View {
     }
 }
 
+/// A folder's own filter. Folders gather catalogs of both kinds, so the
+/// screen carries the movies/shows split the shell's tabs give everywhere
+/// else in the app.
+enum FolderTypeFilter: String, CaseIterable, Identifiable {
+    case all, movies, shows
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: "All"
+        case .movies: "Movies"
+        case .shows: "Shows"
+        }
+    }
+
+    /// Stremio's types. Anything that is neither — a channel, a live stream —
+    /// shows under "All" alone.
+    func matches(_ type: String) -> Bool {
+        switch self {
+        case .all: true
+        case .movies: type.caseInsensitiveCompare("movie") == .orderedSame
+        case .shows: type.caseInsensitiveCompare("series") == .orderedSame
+        }
+    }
+}
+
 /// An opened folder: its catalogs as tabs over a grid of artwork.
 struct FolderScreen: View {
     let open: OpenFolder
@@ -316,6 +345,8 @@ struct FolderScreen: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selected: MetaSelection?
+    /// Folders only: the shell's own tabs do this everywhere else.
+    @State private var typeFilter: FolderTypeFilter = .all
 
     #if os(macOS)
     /// Which poster in the grid is open, and how much room it needs. The grid
@@ -361,7 +392,7 @@ struct FolderScreen: View {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     banner
 
-                    if model.tabs.count > 1 {
+                    if !model.tabs.isEmpty {
                         tabBar
                     }
 
@@ -505,7 +536,53 @@ struct FolderScreen: View {
         return parts
     }
 
+    /// The folder's filter, and its catalogs. The filter leads the row and
+    /// stays put while the catalogs scroll past it, the way a filter control
+    /// sits outside the list it filters.
     private var tabBar: some View {
+        HStack(spacing: 8) {
+            filterButton
+
+            if model.tabs.count > 1 { catalogChips }
+        }
+        .padding(.leading, Phone.pagePadding)
+    }
+
+    /// One button carrying the current filter, with the three choices under
+    /// it — a menu rather than three more chips, which would read as more
+    /// catalogs in a row that is already catalogs.
+    private var filterButton: some View {
+        Menu {
+            Picker("Filter", selection: $typeFilter) {
+                ForEach(FolderTypeFilter.allCases) { filter in
+                    Text(filter.label).tag(filter)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "line.3.horizontal.decrease")
+                Text(typeFilter.label)
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(typeFilter == .all ? .white.opacity(0.7) : palette.onAccent)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background {
+                Capsule().fill(
+                    typeFilter == .all
+                        ? AnyShapeStyle(Color.white.opacity(0.08))
+                        : AnyShapeStyle(palette.accent)
+                )
+            }
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private var catalogChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(Array(model.tabs.enumerated()), id: \.element.id) { index, tab in
@@ -526,7 +603,7 @@ struct FolderScreen: View {
                     .buttonStyle(.pressable)
                 }
             }
-            .padding(.horizontal, Phone.pagePadding)
+            .padding(.trailing, Phone.pagePadding)
         }
         .scrollClipDisabled()
     }
@@ -542,7 +619,11 @@ struct FolderScreen: View {
                 .padding(.horizontal, Phone.pagePadding)
             case .failed:
                 note("\(tab.label) didn't respond.")
-            case .loaded(let items):
+            case .loaded(let all):
+                let items = all.filter { typeFilter.matches($0.type) }
+                if items.isEmpty {
+                    note("Nothing in \(tab.label) is a \(typeFilter == .movies ? "movie" : "show").")
+                }
                 LazyVGrid(columns: columns, spacing: Phone.posterSpacing + 6) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         let baseURL = model.baseURL(for: item, tab: tab)

@@ -3,32 +3,29 @@
     <channel>
         <title>NuviOS</title>
         <item>
-            <title>2026.09.03</title>
-            <pubDate>Thu, 03 Sep 2026 18:21:43 +0200</pubDate>
-            <sparkle:version>7</sparkle:version>
-            <sparkle:shortVersionString>2026.09.03</sparkle:shortVersionString>
+            <title>2026.09.04</title>
+            <pubDate>Fri, 04 Sep 2026 16:10:17 +0200</pubDate>
+            <sparkle:version>8</sparkle:version>
+            <sparkle:shortVersionString>2026.09.04</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <description sparkle:format="markdown"><![CDATA[### New
 
-- A title's cast now shows real photos, not just initials. A TMDB key (in
-  Settings, or baked in by whoever built this copy) gives an exact match;
-  without one, a Wikipedia lookup fills in what it can.
-- A series' episodes now sit right on its detail page, with a season picker
-  above them, instead of behind a separate list.
-- Pressing a tab you're already on now takes you back to that tab's top
-  level, rather than sitting there doing nothing while a folder or detail
-  page stays open on top of it.
-- A folder now has its own Movies / Shows / All filter, so a mixed catalog
-  can be narrowed without leaving the folder.
+- A profile can now use any picture on the web. Edit a profile and paste a link
+  into **Custom image URL**, and that picture becomes the avatar on every device
+  signed into your account.
+- **Browse avatars** opens a browser right in the profile editor, starting at
+  the Nuvio avatar gallery. Tap a picture and it becomes your avatar — no
+  copying links by hand. It works on any site, not just the gallery.
+- Every profile in the switcher now has an edit button, so you can change a
+  profile without switching to it first.
 
 ### Bug fixes
 
-- Streaming-service marketing tiles ("Netflix Top 10", "Apple TV+ Top 10", …)
-  no longer show up as folders with nothing playable behind them.
-- A catalog whose genre comes back as the literal word "None" no longer shows
-  "None" as if it were a real genre.
+- Choosing a new avatar now actually changes it. A profile that had a custom
+  picture set kept showing the old one no matter what you picked, because the
+  saved link always won over the new choice.
 ]]></description>
-            <enclosure url="https://github.com/NuvioApple/NuviOS/releases/download/v2026.09.03/NuvioOS-2026.09.03.dmg" length="73984861" type="application/octet-stream" sparkle:edSignature="g4eck5vUN5fsMW4LCO0rhfa3hdtWdo4oTH7iV8oi3oYOYiTci24dfsF9y04KZMFa4tZceo9l3wo/HoCDUdy/BQ=="/>
+            <enclosure url="https://github.com/NuvioApple/NuviOS/releases/download/v2026.09.04/NuvioOS-2026.09.04.dmg" length="74053567" type="application/octet-stream" sparkle:edSignature="eIwmv8KKc0WkGejyh5Xujtp8Bs6U81qT+vElHAosjOSkPZDqY5/Z6H05s2xOyzhSuKjxwhMQ48/qt9MNRqFHAQ=="/>
         </item>
     </channel>
 </rss>

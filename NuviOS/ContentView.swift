@@ -104,6 +104,13 @@ struct ContentView: View {
         .task(id: sessionIdentity) {
             await membership.refresh(session: session)
             theme.reconcile(with: membership.access.entitlements)
+            // Supporter avatars are row-level-secured, so they can only be
+            // fetched once the account's entitlements are known.
+            await avatars.loadMemberAvatars(
+                configuration: session.configuration,
+                accessToken: await session.validAccessToken(),
+                hasAccess: membership.includes(.profileAvatars)
+            )
         }
         // Addons are profile-scoped, so the stream sources follow whoever is
         // watching — and are re-read when the account itself changes.

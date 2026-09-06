@@ -108,29 +108,60 @@ struct ProfileScreen: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 18) {
                     ForEach(profiles.profiles) { profile in
-                        Button {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                profiles.select(profile)
-                                library.activate(profile: profile)
-                                PlaybackProgress.activate(profile: profile)
-                            }
-                        } label: {
-                            VStack(spacing: 8) {
-                                ProfileAvatar(
-                                    profile: profile,
-                                    size: 62,
-                                    isActive: profile.index == profiles.currentIndex
-                                )
-                                Text(profile.name)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(
-                                        .white.opacity(profile.index == profiles.currentIndex ? 0.95 : 0.55)
+                        // The pencil sits beside the switch button rather than
+                        // inside it: any profile can be edited without being
+                        // switched to first, and a button nested in a button's
+                        // label misbehaves on focus-driven platforms.
+                        ZStack(alignment: .topTrailing) {
+                            Button {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                    profiles.select(profile)
+                                    library.activate(profile: profile)
+                                    PlaybackProgress.activate(profile: profile)
+                                }
+                            } label: {
+                                VStack(spacing: 8) {
+                                    ProfileAvatar(
+                                        profile: profile,
+                                        size: 62,
+                                        isActive: profile.index == profiles.currentIndex
                                     )
-                                    .lineLimit(1)
+                                    Text(profile.name)
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(
+                                            .white.opacity(profile.index == profiles.currentIndex ? 0.95 : 0.55)
+                                        )
+                                        .lineLimit(1)
+                                }
+                                .frame(width: 78)
                             }
-                            .frame(width: 78)
+                            .buttonStyle(.pressable)
+                            #if os(iOS) || os(macOS)
+                            .contextMenu {
+                                Button("Edit profile", systemImage: "pencil") {
+                                    destination = .editor(profile)
+                                }
+                            }
+                            #endif
+
+                            // tvOS drives everything from focus, where a second
+                            // button per card is a focus trap; there the toolbar
+                            // action stays the way in.
+                            #if os(iOS) || os(macOS)
+                            Button {
+                                destination = .editor(profile)
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                    .frame(width: 24, height: 24)
+                                    .glassEffect(.regular, in: .circle)
+                            }
+                            .buttonStyle(.pressable)
+                            .accessibilityLabel("Edit \(profile.name)")
+                            .offset(x: -2, y: -2)
+                            #endif
                         }
-                        .buttonStyle(.pressable)
                     }
 
                     if profiles.canAdd {
@@ -451,6 +482,17 @@ private struct ProfileEditor: View {
     @State private var name: String
     @State private var colorHex: String
     @State private var avatarID: String?
+    /// Set when the chosen avatar is supporter artwork hosted at an absolute
+    /// URL. Stored on the profile so the choice survives on devices that have
+    /// no supporter catalog of their own.
+    /// The avatar's image URL, as editable text. Clicking artwork in the grid
+    /// fills this in; it can also be typed or pasted directly. Stored on the
+    /// profile as `avatar_url`, which the backend prefers over `avatar_id`, so
+    /// whatever ends up here is what every device and the site will show.
+    @State private var avatarURLText: String
+    #if os(iOS) || os(macOS)
+    @State private var isBrowsingAvatars = false
+    #endif
     @State private var category: String?
     @State private var usesPrimaryAddons: Bool
     @State private var usesPrimaryPlugins: Bool
@@ -461,12 +503,27 @@ private struct ProfileEditor: View {
         _name = State(initialValue: profile?.name ?? "")
         _colorHex = State(initialValue: profile?.avatarColorHex ?? Profile.avatarColors[1])
         _avatarID = State(initialValue: profile?.avatarID)
+        _avatarURLText = State(initialValue: profile?.avatarURL ?? "")
         _usesPrimaryAddons = State(initialValue: profile?.usesPrimaryAddons ?? false)
         _usesPrimaryPlugins = State(initialValue: profile?.usesPrimaryPlugins ?? false)
     }
 
     /// `true` while creating, when the new profile cannot be primary.
     private var isPrimary: Bool { profile?.isPrimary ?? false }
+
+    /// What gets saved: blank means "no custom URL", not an empty one.
+    private var avatarURL: String? {
+        let trimmed = avatarURLText.trimmed
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Only absolute http(s) URLs can be fetched by the other clients, so a
+    /// half-typed value is called out rather than silently saved.
+    private var isAvatarURLValid: Bool {
+        guard let avatarURL else { return true }
+        guard avatarURL.hasPrefix("http://") || avatarURL.hasPrefix("https://") else { return false }
+        return URL(string: avatarURL) != nil
+    }
 
     /// The live preview, so choices are visible before they are saved.
     private var preview: Profile {
@@ -477,7 +534,7 @@ private struct ProfileEditor: View {
             usesPrimaryAddons: usesPrimaryAddons,
             usesPrimaryPlugins: usesPrimaryPlugins,
             avatarID: avatarID,
-            avatarURL: profile?.avatarURL
+            avatarURL: isAvatarURLValid ? avatarURL : nil
         )
     }
 
@@ -500,6 +557,8 @@ private struct ProfileEditor: View {
                             .glassCard(cornerRadius: 16)
 
                         avatarPicker
+
+                        customURLField
 
                         colorPicker
 
@@ -529,7 +588,7 @@ private struct ProfileEditor: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await save() } }
-                        .disabled(isSaving)
+                        .disabled(isSaving || !isAvatarURLValid)
                 }
             }
         }
@@ -547,7 +606,7 @@ private struct ProfileEditor: View {
                 .foregroundStyle(.white.opacity(0.7))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            if avatars.items.isEmpty {
+            if avatars.allItems.isEmpty {
                 Text(
                     avatars.isLoading
                         ? "Loading avatars…"
@@ -577,6 +636,11 @@ private struct ProfileEditor: View {
                         Button {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                                 avatarID = avatar.id
+                                // Supporter artwork syncs by URL; the public
+                                // catalog syncs by id, and must clear any URL
+                                // left over from a previous choice or it would
+                                // keep winning over the new one.
+                                avatarURLText = avatar.syncableImageURL ?? ""
                                 if let bg = avatar.bgColor, Color(hex: bg) != nil {
                                     colorHex = bg
                                 }
@@ -592,9 +656,12 @@ private struct ProfileEditor: View {
                     }
                 }
 
-                if avatarID != nil {
+                if avatarID != nil || avatarURL != nil {
                     Button("Use initials instead", systemImage: "textformat") {
-                        withAnimation { avatarID = nil }
+                        withAnimation {
+                            avatarID = nil
+                            avatarURLText = ""
+                        }
                     }
                     .font(.footnote.weight(.semibold))
                     .tint(.white.opacity(0.55))
@@ -604,6 +671,78 @@ private struct ProfileEditor: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassCard(cornerRadius: 20)
+    }
+
+    /// The image URL behind the avatar, editable directly.
+    ///
+    /// Clicking artwork above fills this in, and anything pasted here works the
+    /// same way — the profile stores the URL rather than a catalog id, so it
+    /// resolves on devices that have no catalog entry for it.
+    private var customURLField: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Custom image URL")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.7))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 10) {
+                TextField("https://…", text: $avatarURLText)
+                    .textFieldStyle(.plain)
+                    .font(.footnote)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    #endif
+
+                if !avatarURLText.isEmpty {
+                    Button {
+                        withAnimation { avatarURLText = "" }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear image URL")
+                }
+            }
+            .padding(12)
+            .glassCard(cornerRadius: 14)
+
+            #if os(iOS) || os(macOS)
+            // Typing a URL with a remote or an on-screen keyboard is the worst
+            // part of this screen, so the gallery can be browsed in place and
+            // the link picked by tapping the picture itself.
+            Button("Browse avatars", systemImage: "safari") {
+                isBrowsingAvatars = true
+            }
+            .buttonStyle(.glass)
+            .font(.footnote.weight(.semibold))
+            #endif
+
+            Text(
+                isAvatarURLValid
+                    ? "Paste a link to an image, or pick one above. Syncs to every device."
+                    : "Needs to start with http:// or https://"
+            )
+            .font(.caption2)
+            .foregroundStyle(
+                isAvatarURLValid ? .white.opacity(0.4) : Color.orange.opacity(0.9)
+            )
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(cornerRadius: 20)
+        #if os(iOS) || os(macOS)
+        .sheet(isPresented: $isBrowsingAvatars) {
+            AvatarBrowser { picked in
+                avatarURLText = picked
+            }
+            .platformSheetSizing()
+        }
+        #endif
     }
 
     private var colorPicker: some View {
@@ -658,6 +797,7 @@ private struct ProfileEditor: View {
             existing.name = name.trimmed.isEmpty ? existing.name : name.trimmed
             existing.avatarColorHex = colorHex
             existing.avatarID = avatarID
+            existing.avatarURL = avatarURL
             if !existing.isPrimary {
                 existing.usesPrimaryAddons = usesPrimaryAddons
                 existing.usesPrimaryPlugins = usesPrimaryPlugins
@@ -667,6 +807,7 @@ private struct ProfileEditor: View {
             name: name,
             colorHex: colorHex,
             avatarID: avatarID,
+            avatarURL: avatarURL,
             usesPrimaryAddons: usesPrimaryAddons,
             usesPrimaryPlugins: usesPrimaryPlugins,
             session: session

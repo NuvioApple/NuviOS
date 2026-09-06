@@ -18,6 +18,9 @@ struct AvatarCatalogItem: Codable, Identifiable, Equatable, Hashable {
     /// the profile as `avatar_color_hex` when the avatar is chosen, so the
     /// ring and any fallback initial match the picture.
     let bgColor: String?
+    /// Supporter-only artwork, from `get_member_profile_avatar_catalog`.
+    /// Not part of the RPC payload — set when the member catalog is merged in.
+    var memberOnly: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -36,6 +39,15 @@ struct AvatarCatalogItem: Codable, Identifiable, Equatable, Hashable {
         category = try c.decodeIfPresent(String.self, forKey: .category) ?? ""
         sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
         bgColor = try c.decodeIfPresent(String.self, forKey: .bgColor)
+        memberOnly = false
+    }
+
+    /// The publicly-fetchable URL this avatar should be stored as on a
+    /// profile, or `nil` when it resolves through the catalog by id instead.
+    /// Only supporter artwork hosted at an absolute URL syncs this way.
+    var syncableImageURL: String? {
+        guard storagePath.hasPrefix("http://") || storagePath.hasPrefix("https://") else { return nil }
+        return storagePath
     }
 
     /// Public storage URL for this avatar. Android builds the same string from
@@ -87,6 +99,51 @@ struct AvatarCatalogClient {
     }
 }
 
+/// Reads the supporter avatar catalog.
+///
+/// Unlike the public catalog this RPC is row-level-secured, so it needs the
+/// account's JWT and returns nothing for a non-supporter.
+///
+/// Upstream also serves supporter artwork out of a private bucket, which it
+/// downloads and caches per device. Those rows are skipped here: a device-local
+/// file can't be stored on the profile as `avatar_url`, so only artwork hosted
+/// at an absolute URL is offered.
+struct MemberAvatarCatalogClient {
+    let configuration: ServerConfiguration
+    var session: URLSession = .shared
+
+    func fetch(accessToken: String) async throws -> [AvatarCatalogItem] {
+        var base = configuration.backendURL
+        while base.hasSuffix("/") { base.removeLast() }
+
+        var request = URLRequest(
+            url: URL(string: "\(base)/rest/v1/rpc/get_member_profile_avatar_catalog")!
+        )
+        request.httpMethod = "POST"
+        request.httpBody = Data("{}".utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(configuration.publishableKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 20
+
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw AuthError.server(
+                status: http.statusCode,
+                body: String(data: data, encoding: .utf8) ?? ""
+            )
+        }
+        return try JSONDecoder().decode([AvatarCatalogItem].self, from: data)
+            .filter { $0.syncableImageURL != nil }
+            .map { item in
+                var flagged = item
+                flagged.memberOnly = true
+                return flagged
+            }
+            .sorted { $0.sortOrder < $1.sortOrder }
+    }
+}
+
 // MARK: - Store
 
 /// The avatar catalog, cached across launches.
@@ -103,8 +160,15 @@ final class AvatarCatalog: ObservableObject {
     private static let itemsKey = "nuvio.avatars.catalog"
     private static let fetchedKey = "nuvio.avatars.fetchedAt"
     private static let backendKey = "nuvio.avatars.backend"
+    private static let memberItemsKey = "nuvio.avatars.catalog.member"
+
+    /// The category tab supporter artwork is filed under, matching Android.
+    static let supporterCategory = "supporter"
 
     @Published private(set) var items: [AvatarCatalogItem] = []
+    /// Supporter artwork, kept apart so it can be dropped the moment an
+    /// account stops being one without refetching the public catalog.
+    @Published private(set) var memberItems: [AvatarCatalogItem] = []
     @Published private(set) var isLoading = false
 
     private let defaults: UserDefaults
@@ -120,14 +184,25 @@ final class AvatarCatalog: ObservableObject {
            let cached = try? JSONDecoder().decode([AvatarCatalogItem].self, from: data) {
             self.items = cached
         }
+        if let data = defaults.data(forKey: Self.memberItemsKey),
+           let cached = try? JSONDecoder().decode([AvatarCatalogItem].self, from: data) {
+            self.memberItems = cached
+        }
     }
+
+    /// Everything the picker may show: the public catalog plus whatever
+    /// supporter artwork the account has unlocked.
+    var allItems: [AvatarCatalogItem] { items + memberItems }
 
     /// The categories to offer as filter tabs, in Android's order: the pinned
     /// ones it knows about first, then whatever else the backend sent.
     private static let pinnedCategories = ["anime", "animation", "tv", "movie", "gaming"]
 
     var categories: [String] {
-        let present = items
+        // Supporter artwork ships in packs of its own ("One Piece", "Marvel",
+        // ...), so those become tabs too rather than collapsing into a single
+        // "supporter" grid.
+        let present = allItems
             .map { $0.category.trimmed }
             .filter { !$0.isEmpty }
         var ordered: [String] = []
@@ -138,17 +213,21 @@ final class AvatarCatalog: ObservableObject {
         let rest = Set(present.map { $0.lowercased() })
             .subtracting(ordered.map { $0.lowercased() })
             .sorted()
-        return ordered + rest
+        let supporter = memberItems.isEmpty ? [] : [Self.supporterCategory]
+        return supporter + ordered + rest
     }
 
     func items(in category: String?) -> [AvatarCatalogItem] {
-        guard let category else { return items }
-        return items.filter { $0.category.caseInsensitiveCompare(category) == .orderedSame }
+        guard let category else { return allItems }
+        if category.caseInsensitiveCompare(Self.supporterCategory) == .orderedSame {
+            return memberItems
+        }
+        return allItems.filter { $0.category.caseInsensitiveCompare(category) == .orderedSame }
     }
 
     func item(id: String?) -> AvatarCatalogItem? {
         guard let id else { return nil }
-        return items.first { $0.id == id }
+        return allItems.first { $0.id == id }
     }
 
     /// The picture for a profile: its stored `avatarURL` if the account set an
@@ -175,6 +254,7 @@ final class AvatarCatalog: ObservableObject {
         // A different backend has a different catalog; drop the old one.
         if backendURL != configuration.backendURL {
             items = []
+            setMemberItems([])
             fetchedAt = nil
             backendURL = configuration.backendURL
             defaults.set(configuration.backendURL, forKey: Self.backendKey)
@@ -193,6 +273,35 @@ final class AvatarCatalog: ObservableObject {
         guard let fetchedAt, !items.isEmpty else { return true }
         let elapsed = Date().timeIntervalSince(fetchedAt)
         return elapsed < 0 || elapsed >= Self.refreshInterval
+    }
+
+    /// Loads supporter artwork for an account that has unlocked it, and clears
+    /// it for one that hasn't — a lapsed supporter stops being offered the
+    /// avatars, though any already saved to a profile keeps rendering from its
+    /// stored URL.
+    func loadMemberAvatars(
+        configuration: ServerConfiguration?,
+        accessToken: String?,
+        hasAccess: Bool
+    ) async {
+        guard hasAccess, let configuration, let accessToken else {
+            setMemberItems([])
+            return
+        }
+        guard let fetched = try? await MemberAvatarCatalogClient(configuration: configuration)
+            .fetch(accessToken: accessToken)
+        else { return }
+        setMemberItems(fetched)
+    }
+
+    private func setMemberItems(_ value: [AvatarCatalogItem]) {
+        guard value != memberItems else { return }
+        memberItems = value
+        if value.isEmpty {
+            defaults.removeObject(forKey: Self.memberItemsKey)
+        } else if let data = try? JSONEncoder().encode(value) {
+            defaults.set(data, forKey: Self.memberItemsKey)
+        }
     }
 
     private func fetch(configuration: ServerConfiguration) async {

@@ -311,6 +311,7 @@ final class ProfileStore: ObservableObject {
         name: String,
         colorHex: String,
         avatarID: String?,
+        avatarURL: String? = nil,
         usesPrimaryAddons: Bool,
         usesPrimaryPlugins: Bool,
         session: AppSession
@@ -323,7 +324,8 @@ final class ProfileStore: ObservableObject {
             avatarColorHex: colorHex,
             usesPrimaryAddons: usesPrimaryAddons,
             usesPrimaryPlugins: usesPrimaryPlugins,
-            avatarID: avatarID
+            avatarID: avatarID,
+            avatarURL: avatarURL
         )
         profiles.append(profile)
         profiles.sort { $0.index < $1.index }

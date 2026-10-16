@@ -22,9 +22,11 @@ struct ProfileScreen: View {
         case editor(Profile?)
         case server
         case auth
+        case dashboard
 
         var id: String {
             switch self {
+            case .dashboard: "dashboard"
             case .editor(let profile): "editor-\(profile?.index.description ?? "new")"
             case .server: "server"
             case .auth: "auth"
@@ -80,6 +82,15 @@ struct ProfileScreen: View {
                     switch destination {
                     case .editor(let profile): ProfileEditor(profile: profile)
                     case .server: ServerView()
+                    case .dashboard:
+                        #if os(iOS)
+                        if let url = session.dashboardURL {
+                            // Whatever was changed there is applied on the way out.
+                            DashboardBrowser(url: url) { applyDashboardChanges() }
+                        }
+                        #else
+                        EmptyView()
+                        #endif
                     // A remote can't type a password comfortably, so the TV
                     // signs in the way it signs in from the welcome screen:
                     // a code on screen and a phone to enter it on.
@@ -366,6 +377,27 @@ struct ProfileScreen: View {
 
     // MARK: Account
 
+    /// Whatever was changed on the dashboard, applied: profiles first, since
+    /// they decide the addon list, then the list, then the shelves.
+    private func applyDashboardChanges() {
+        Task {
+            await profiles.sync(session: session)
+            await library.sync(session: session, profile: profiles.current)
+            await model.refresh(session: session, profile: profiles.current)
+        }
+    }
+
+    #if os(iOS) || os(macOS)
+    private func openDashboard() {
+        #if os(macOS)
+        guard let url = session.dashboardURL else { return }
+        DashboardBrowser.shared.open(url) { applyDashboardChanges() }
+        #else
+        destination = .dashboard
+        #endif
+    }
+    #endif
+
     private var account: some View {
         Section(title: "Account") {
             VStack(alignment: .leading, spacing: 14) {
@@ -375,8 +407,11 @@ struct ProfileScreen: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 10) {
+                    // Pulls what was changed elsewhere (the dashboard, another
+                    // device): profiles first, since they decide the addon list,
+                    // then the list, then the shelves.
                     Button {
-                        Task { await model.refresh(session: session, profile: profiles.current) }
+                        applyDashboardChanges()
                     } label: {
                         Label(
                             model.isLoading ? "Refreshing…" : "Refresh",
@@ -385,6 +420,13 @@ struct ProfileScreen: View {
                     }
                     .buttonStyle(.glass)
                     .disabled(model.isLoading)
+
+                    #if os(iOS) || os(macOS)
+                    if session.dashboardURL != nil {
+                        Button("Dashboard", systemImage: "safari") { openDashboard() }
+                            .buttonStyle(.glass)
+                    }
+                    #endif
 
                     if case .signedIn = session.state {
                         Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right") {

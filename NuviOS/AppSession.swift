@@ -57,6 +57,14 @@ final class AppSession: ObservableObject {
         return configuration.backendURL
     }
 
+    /// The web dashboard where profiles, addons and the library are managed.
+    /// Official deployments live on nuvio.tv; a self-hosted server serves its
+    /// own pages from the backend.
+    var dashboardURL: URL? {
+        let isCustom = configuration?.isCustom ?? false
+        return URL(string: isCustom ? backendDisplayName : "https://nuvio.tv")
+    }
+
     // MARK: Launch
 
     /// Discovers the backend (cached config first, then a refresh) and restores

@@ -114,6 +114,19 @@ struct RootView: View {
             .platformShellTabViewStyle()
             .platformMinimizingTabBar()
             .tint(theme.palette.accent)
+            // Content loads only once a profile is chosen and the shell is
+            // actually on screen; switching profile reloads it.
+            .task(id: profiles.currentIndex) {
+                PlaybackProgress.activate(profile: profiles.current)
+                // Reads the device's copy of the list first and reconciles it
+                // with the account's, so the list draws immediately and then
+                // catches up.
+                await library.sync(session: session, profile: profiles.current)
+                // Switching profile can switch addon lists, so the shelves
+                // reload and the list follows the profile.
+                await model.loadIfProfileChanged(session: session, profile: profiles.current)
+                await model.loadIfNeeded(session: session, profile: profiles.current)
+            }
             // A tab item takes no gestures in SwiftUI, so the hold is caught
             // by a window-level recognizer that leaves the tap alone.
             // The long-press shortcut rides on a UIKit window recognizer, so
@@ -132,21 +145,10 @@ struct RootView: View {
             }
         }
         .environment(\.shellBarPress, barPress)
-        .task {
-            await profiles.sync(session: session)
-            PlaybackProgress.activate(profile: profiles.current)
-            // Reads the device's copy of the list first and reconciles it with
-            // the account's, so the list draws immediately and then catches up.
-            await library.sync(session: session, profile: profiles.current)
-            await model.loadIfNeeded(session: session, profile: profiles.current)
-        }
-        // Switching profile can switch addon lists, so the shelves reload and
-        // the list follows the profile.
-        .task(id: profiles.currentIndex) {
-            PlaybackProgress.activate(profile: profiles.current)
-            await library.sync(session: session, profile: profiles.current)
-            await model.loadIfProfileChanged(session: session, profile: profiles.current)
-        }
+        // Profiles only: the gate needs the account's list to know whether to
+        // ask. Nothing that loads content may run out here, since this view
+        // exists behind the chooser.
+        .task { await profiles.sync(session: session) }
     }
 }
 #endif

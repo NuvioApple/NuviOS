@@ -182,6 +182,7 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
     func open(_ request: PlaybackRequest, into view: PlatformView) {
         guard !hasStarted else { return }
         hasStarted = true
+        PlayerMetrics.markOpen()
         lastTickSecond = -1
         self.request = request
         self.surface = view
@@ -1060,6 +1061,10 @@ extension NuvioPlayerModel: PlaybackEngineDelegate {
     }
 
     func engineDidUpdate(_ engine: PlaybackEngine) {
+        PlayerMetrics.measure("engineUpdate") { handleUpdate(engine) }
+    }
+
+    private func handleUpdate(_ engine: PlaybackEngine) {
         guard isCurrent(engine) else { return }
 
         if duration == nil, let length = engine.duration {
@@ -1225,6 +1230,7 @@ struct NuvioPlayerScreen: View {
     @State private var size: CGSize = .zero
 
     var body: some View {
+        let _ = PlayerMetrics.count("screenBody")
         ZStack {
             Color.black.ignoresSafeArea()
 

@@ -41,11 +41,15 @@ actor TrailerService {
         let cacheKey = "\(item.type)|\(item.id)"
         if let cached = cache[cacheKey] { return cached }
 
-        var resolved = await addonTrailerID(for: item, baseURL: addonBaseURL)
-
+        // TMDB is the source of record. The addon's own trailer is only the
+        // fallback for when there is no key or TMDB has nothing for the title.
+        var resolved: String?
         let key = apiKey.trimmed
-        if resolved == nil, !key.isEmpty {
+        if !key.isEmpty {
             resolved = await lookUp(item: item, apiKey: key)
+        }
+        if resolved == nil {
+            resolved = await addonTrailerID(for: item, baseURL: addonBaseURL)
         }
 
         cache[cacheKey] = resolved
@@ -184,6 +188,91 @@ actor TrailerService {
     }
 }
 
+// MARK: - Clip
+
+/// A trailer that fades in over whatever artwork sits beneath it.
+///
+/// The billboard drives its own copy of this dance; the detail page and the
+/// hover card share this one. It resolves the id, waits `startDelay` so the
+/// artwork gets its moment, plays muted, and falls back to the artwork the
+/// instant the embed ends, errors, or never starts.
+struct TrailerClip: View {
+    let item: MetaItem
+    let addonBaseURL: String?
+    /// Whether the clip should be playing at all. Flipping it off tears the
+    /// embed down, which is what stops the audio and the battery drain.
+    var isActive: Bool
+    var isMuted: Bool = true
+    var startDelay: Double = 1.5
+    var onPlayingChange: (Bool) -> Void = { _ in }
+
+    @EnvironmentObject private var tmdb: TmdbSettings
+    @Environment(\.scenePhase) private var scenePhase
+
+    @State private var youTubeKey: String?
+    @State private var isVisible = false
+
+    private var taskID: String {
+        "\(isActive)|\(scenePhase == .active)|\(tmdb.canFetchTrailers)|\(item.id)"
+    }
+
+    var body: some View {
+        ZStack {
+            if let youTubeKey {
+                YouTubeTrailerView(
+                    videoID: youTubeKey,
+                    isMuted: isMuted,
+                    onReady: {
+                        withAnimation(.easeInOut(duration: 0.6)) { isVisible = true }
+                        onPlayingChange(true)
+                    },
+                    onEnded: { stop() }
+                )
+                .opacity(isVisible ? 1 : 0)
+                // 16:9 embed, taller container: blown up and centre-cropped
+                // like a backdrop rather than squashed.
+                .aspectRatio(16 / 9, contentMode: .fill)
+                .allowsHitTesting(false)
+            }
+        }
+        .task(id: taskID) { await run() }
+        .onDisappear { stop() }
+    }
+
+    private func run() async {
+        guard isActive, scenePhase == .active, tmdb.canFetchTrailers else {
+            stop()
+            return
+        }
+
+        // Lookup and the beat of stillness overlap, so a slow lookup doesn't
+        // stack on top of the pause.
+        async let resolved = TrailerService.shared.youTubeKey(
+            for: item,
+            addonBaseURL: addonBaseURL,
+            apiKey: tmdb.effectiveAPIKey
+        )
+        async let beat: Void = Task.sleep(for: .seconds(startDelay))
+
+        let key = await resolved
+        try? await beat
+        guard !Task.isCancelled, let key else { return }
+        youTubeKey = key
+
+        // An age-gated or embed-disabled video never reports playing.
+        try? await Task.sleep(for: .seconds(8))
+        guard !Task.isCancelled, !isVisible else { return }
+        stop()
+    }
+
+    private func stop() {
+        guard youTubeKey != nil || isVisible else { return }
+        withAnimation(.easeInOut(duration: 0.3)) { isVisible = false }
+        youTubeKey = nil
+        onPlayingChange(false)
+    }
+}
+
 // MARK: - Player
 
 /// YouTube's own embedded player, muted and chromeless, sized to fill.
@@ -237,7 +326,7 @@ struct YouTubeTrailerView: UIViewRepresentable {
         context.coordinator.onReady = onReady
         context.coordinator.onEnded = onEnded
         context.coordinator.load(videoID, into: player, playerVars: Self.playerVars)
-        context.coordinator.apply(isMuted: isMuted, to: player)
+        context.coordinator.apply(isMuted: isMuted || runsInSimulator, to: player)
     }
 
     static func dismantleUIView(_ player: YTPlayerView, coordinator: Coordinator) {
@@ -350,7 +439,7 @@ struct YouTubeTrailerView: NSViewRepresentable {
         context.coordinator.onReady = onReady
         context.coordinator.onEnded = onEnded
         context.coordinator.load(videoID, into: webView)
-        context.coordinator.apply(isMuted: isMuted, to: webView)
+        context.coordinator.apply(isMuted: isMuted || runsInSimulator, to: webView)
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
@@ -378,9 +467,9 @@ struct YouTubeTrailerView: NSViewRepresentable {
             loadedVideoID = videoID
             hasStarted = false
             lastMuted = true
-            // A real origin is required: the IFrame API refuses to run from
-            // an opaque `about:blank` page.
-            webView.loadHTMLString(Self.html(for: videoID), baseURL: URL(string: "https://www.youtube.com"))
+            // A real https origin is required, and it must not be youtube.com
+            // itself: that origin gets error 152 and the video never starts.
+            webView.loadHTMLString(Self.html(for: videoID), baseURL: URL(string: Self.origin))
         }
 
         func apply(isMuted: Bool, to webView: WKWebView) {
@@ -410,6 +499,8 @@ struct YouTubeTrailerView: NSViewRepresentable {
             }
         }
 
+        private static let origin = "https://www.youtube-nocookie.com"
+
         private static func html(for videoID: String) -> String {
             // The id is interpolated into JS, so anything that could close the
             // string literal is dropped. YouTube ids are [A-Za-z0-9_-] anyway.
@@ -431,7 +522,7 @@ struct YouTubeTrailerView: NSViewRepresentable {
                       videoId: '\(safeID)',
                       playerVars: {
                         autoplay: 1, mute: 1, controls: 0, playsinline: 1,
-                        rel: 0, modestbranding: 1, iv_load_policy: 3,
+                        origin: '\(origin)', rel: 0, modestbranding: 1, iv_load_policy: 3,
                         fs: 0, disablekb: 1
                       },
                       events: {

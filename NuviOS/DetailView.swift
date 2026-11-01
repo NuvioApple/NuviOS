@@ -18,6 +18,8 @@ struct DetailView: View {
     @State private var detail: MetaDetail?
     @State private var failed = false
     @State private var synopsisExpanded = false
+    @State private var trailerMuted = true
+    @State private var isTrailerPlaying = false
     @State private var scrollProgress: Double = 0
     @State private var related: MetaSelection?
     @State private var isPickingStream = false
@@ -209,6 +211,18 @@ struct DetailView: View {
                     AnyView(Color.white.opacity(0.05))
                 }
 
+                #if os(iOS) || os(macOS)
+                // Off once the page scrolls past the artwork, so a trailer
+                // never plays unseen under the facts.
+                TrailerClip(
+                    item: item,
+                    addonBaseURL: selection.addonBaseURL,
+                    isActive: scrollProgress < 0.8,
+                    isMuted: trailerMuted,
+                    onPlayingChange: { isTrailerPlaying = $0 }
+                )
+                #endif
+
                 LinearGradient(
                     stops: [
                         .init(color: .black.opacity(0.30), location: 0),
@@ -225,6 +239,25 @@ struct DetailView: View {
         // The artwork is the only thing allowed past the safe area; the clip
         // keeps a `.fill` image from widening the page.
         .clipped()
+        #if os(iOS) || os(macOS)
+        .overlay(alignment: .bottomTrailing) {
+            if isTrailerPlaying {
+                Button {
+                    trailerMuted.toggle()
+                } label: {
+                    Image(systemName: trailerMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .glassEffect(.regular, in: .circle)
+                }
+                .buttonStyle(.pressable)
+                .padding(16)
+                .transition(.opacity)
+                .accessibilityLabel(trailerMuted ? "Unmute trailer" : "Mute trailer")
+            }
+        }
+        #endif
         .visualEffect { view, geometry in
             let minY = geometry.frame(in: .scrollView).minY
             let height = max(geometry.size.height, 1)
@@ -257,7 +290,11 @@ struct DetailView: View {
                     typesetTitle
                 }
             }
-            .frame(maxWidth: min(300 * Phone.scale, Phone.readableWidth), maxHeight: 120 * Phone.scale)
+            .frame(
+                maxWidth: min((isTrailerPlaying ? 210 : 300) * Phone.scale, Phone.readableWidth),
+                maxHeight: (isTrailerPlaying ? 84 : 120) * Phone.scale
+            )
+            .animation(.smooth(duration: 0.55, extraBounce: 0.0), value: isTrailerPlaying)
         } else {
             typesetTitle
         }

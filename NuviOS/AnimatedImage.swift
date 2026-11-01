@@ -174,7 +174,7 @@ struct AnimatedImage: View {
         // Visibility within whatever scroll view this sits in. A shelf holds
         // more tiles than fit on screen, and every one of them animating is
         // work nobody can see.
-        .onScrollVisibilityChange(threshold: 0.15) { visible in
+        .trackingScrollVisibility { visible in
             isOnScreen = visible
         }
         .onChange(of: isRunning) { _, running in
@@ -186,5 +186,18 @@ struct AnimatedImage: View {
     private struct PlaybackKey: Equatable {
         let isRunning: Bool
         let frameCount: Int
+    }
+}
+
+private extension View {
+    /// `onScrollVisibilityChange` needs tvOS 18; earlier systems keep the tile
+    /// treated as visible.
+    @ViewBuilder
+    func trackingScrollVisibility(_ action: @escaping (Bool) -> Void) -> some View {
+        if #available(tvOS 18.0, *) {
+            onScrollVisibilityChange(threshold: 0.15, action)
+        } else {
+            self
+        }
     }
 }

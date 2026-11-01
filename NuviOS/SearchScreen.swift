@@ -151,7 +151,7 @@ struct SearchScreen: View {
                 search.search(new, sources: model.searchSources)
             }
             .navigationDestination(item: $selected) { selection in
-                DetailView(selection: selection)
+                TitleDetail(selection: selection)
             }
         }
     }

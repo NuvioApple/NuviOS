@@ -218,6 +218,13 @@ struct CollectionShelf: View {
     /// Motion during a scroll is not something anyone can follow, so the
     /// animation waits for the scroll to come to rest.
     @State private var isSettled = true
+    /// The tile that has focus, so it can be drawn above the ones beside it.
+    @State private var focusedFolderID: String?
+    @Environment(\.shelfBand) private var shelfBand
+    @Environment(\.shelfID) private var shelfID
+    #if os(tvOS)
+    @Environment(HeroFocus.self) private var heroFocus: HeroFocus?
+    #endif
 
     /// One tile at a time, the way one tile at a time holds focus on the TV.
     private var animating: String? {
@@ -233,17 +240,45 @@ struct CollectionShelf: View {
     private var folders: [CollectionFolder] { collection.visibleFolders }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ShelfHeader(title: collection.title, subtitle: collection.pinToTop ? "Pinned" : nil)
-
+        ShelfRow(
+            id: "collection|\(collection.id)",
+            header: ShelfHeader(title: collection.title, subtitle: collection.pinToTop ? "Pinned" : nil)
+        ) {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: Phone.posterSpacing) {
                     ForEach(folders) { folder in
                         Button { onOpen(folder) } label: {
-                            tile(folder)
+                            FocusReader { isFocused in
+                                tile(folder)
+                                    #if os(tvOS)
+                                    // The hero shows this collection's
+                                    // header while its tile has focus.
+                                    .onChange(of: isFocused) { _, focused in
+                                        if focused {
+                                            focusedFolderID = folder.id
+                                            heroFocus?.focus(
+                                                collection: CollectionHero(folder: folder, collection: collection),
+                                                row: shelfID
+                                            )
+                                        }
+                                    }
+                                    #endif
+                            }
+                            .padding(.top, Phone.focusSlack + shelfBand)
+                            .padding(.bottom, Phone.focusSlack)
                         }
+                        #if os(tvOS)
+                        // Wide tiles, so a small lift: the default grows them
+                        // into the title above and the tiles beside them.
+                        .buttonStyle(PressableStyle(scale: 0.97, focusScale: 1.04))
+                        #else
                         .buttonStyle(.pressable)
+                        #endif
                         .accessibilityLabel("\(folder.title), \(collection.title)")
+                        // A button's own z-index only orders it against its
+                        // own contents; the row needs it on the tile itself,
+                        // or a later neighbour paints over the focused one.
+                        .zIndex(focusedFolderID == folder.id ? 1 : 0)
                         .platformOnHover { inside in
                             // Leaving a tile only clears the pointer if it
                             // hasn't already landed on its neighbour.
@@ -253,6 +288,7 @@ struct CollectionShelf: View {
                     }
                 }
                 .padding(.horizontal, Phone.pagePadding)
+                .padding(.top, Phone.shelfHeaderBand)
                 .scrollTargetLayout()
             }
             .scrollTargetBehavior(.viewAligned)
@@ -292,9 +328,13 @@ struct CollectionShelf: View {
                     cornerRadius: Phone.posterRadius,
                     isAnimating: shouldAnimate(folder, isFocused: isFocused)
                 )
+                #if !os(tvOS)
+                // On the TV the button style already lifts the whole tile;
+                // a second lift here took it past the gap to its neighbours.
                 .scaleEffect(isFocused ? 1.06 : 1)
                 .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 12)
                 .animation(.spring(response: 0.34, dampingFraction: 0.74), value: isFocused)
+                #endif
             }
 
             if !folder.hideTitle {
@@ -348,42 +388,6 @@ struct FolderScreen: View {
     /// Folders only: the shell's own tabs do this everywhere else.
     @State private var typeFilter: FolderTypeFilter = .all
 
-    #if os(macOS)
-    /// Which poster in the grid is open, and how much room it needs. The grid
-    /// makes that room the same way a shelf does — the cards after it on its
-    /// own row stand aside — so nothing moves under a resting pointer.
-    @State private var expansion = ShelfExpansion()
-    #endif
-
-    private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: Phone.posterWidth), spacing: Phone.posterSpacing)]
-    }
-
-    #if os(macOS)
-    /// The shape of the grid: how many posters `.adaptive(minimum:)` fits
-    /// across the content column — which is what says where one row ends and
-    /// the next begins — and the pitch it lays them out on.
-    ///
-    /// `.adaptive` doesn't report the number of columns it settled on, so this
-    /// re-derives it the same way: as many columns of at least the minimum
-    /// width as the column will take.
-    private var rowMetrics: RowMetrics {
-        let pitch = Phone.posterWidth + Phone.posterSpacing
-        let available = Phone.width - Phone.pagePadding * 2 + Phone.posterSpacing
-
-        return RowMetrics(
-            columnsPerRow: pitch > 0 ? max(Int(available / pitch), 1) : 1,
-            slotWidth: Phone.posterWidth,
-            pitch: pitch
-        )
-    }
-    #endif
-
-    private var tab: FolderTab? {
-        guard model.tabs.indices.contains(model.selection) else { return nil }
-        return model.tabs[model.selection]
-    }
-
     var body: some View {
         ZStack(alignment: .top) {
             palette.background.ignoresSafeArea()
@@ -393,7 +397,7 @@ struct FolderScreen: View {
                     banner
 
                     if !model.tabs.isEmpty {
-                        tabBar
+                        filterBar
                     }
 
                     if !model.skippedProviders.isEmpty {
@@ -402,18 +406,11 @@ struct FolderScreen: View {
                         )
                     }
 
-                    grid
+                    rows
                 }
                 .padding(.bottom, Phone.tabBarClearance)
             }
             .scrollIndicators(.hidden)
-            #if os(macOS)
-            // Posters pass under a still pointer as the grid scrolls; opening
-            // one of those is answering the scroll rather than the pointer.
-            .onScrollPhaseChange { _, phase in
-                expansion.isScrolling = phase != .idle
-            }
-            #endif
             // The banner is allowed under the status bar and the nav bar —
             // artwork that stops short of the edges isn't a title card.
             .ignoresSafeArea(edges: .top)
@@ -421,7 +418,7 @@ struct FolderScreen: View {
         .navigationTitle("")
         .platformInlineTitle()
         .platformHiddenNavigationBackground()
-        .navigationDestination(item: $selected) { DetailView(selection: $0) }
+        .navigationDestination(item: $selected) { TitleDetail(selection: $0) }
         .task {
             await model.load(
                 folder: open.folder,
@@ -484,8 +481,8 @@ struct FolderScreen: View {
     @ViewBuilder
     private func titleTreatment(content: CGFloat) -> some View {
         // Sized against the measure it sits in, never beyond it.
-        let logoWidth = min(content, 280 * bannerScale(for: content))
-        let logoHeight = min(88 * bannerScale(for: content), bannerHeight * 0.34)
+        let logoWidth = min(content, 360 * bannerScale(for: content))
+        let logoHeight = min(110 * bannerScale(for: content), bannerHeight * 0.42)
 
         return Group {
             if let logo = open.folder.titleLogoURL, let url = URL(string: logo) {
@@ -536,14 +533,10 @@ struct FolderScreen: View {
         return parts
     }
 
-    /// The folder's filter, and its catalogs. The filter leads the row and
-    /// stays put while the catalogs scroll past it, the way a filter control
-    /// sits outside the list it filters.
-    private var tabBar: some View {
+    /// The folder's filter, leading the rows it filters.
+    private var filterBar: some View {
         HStack(spacing: 8) {
             filterButton
-
-            if model.tabs.count > 1 { catalogChips }
         }
         .padding(.leading, Phone.pagePadding)
     }
@@ -582,75 +575,75 @@ struct FolderScreen: View {
         .fixedSize()
     }
 
-    private var catalogChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Array(model.tabs.enumerated()), id: \.element.id) { index, tab in
-                    Button { model.select(index) } label: {
-                        Text(tab.label)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(index == model.selection ? palette.onAccent : .white.opacity(0.7))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background {
-                                Capsule().fill(
-                                    index == model.selection
-                                        ? AnyShapeStyle(palette.accent)
-                                        : AnyShapeStyle(Color.white.opacity(0.08))
+    /// Each catalog as its own row under the banner, the way a streaming
+    /// service lays out a hub, instead of tabs over one grid.
+    @ViewBuilder
+    private var rows: some View {
+        let catalogs = model.tabs.filter { $0.id != "__all" }
+        if catalogs.isEmpty {
+            if model.isLoading {
+                ForEach(0..<3, id: \.self) { _ in ShelfPlaceholder() }
+            } else {
+                note("Nothing in this folder could be loaded.")
+            }
+        } else if catalogs.count == 1, let tab = catalogs.first {
+            // One catalog isn't a hub — a lone row under a banner reads as
+            // unfinished — so its titles fill the page as a grid.
+            single(tab)
+        } else {
+            ForEach(catalogs) { tab in
+                switch tab.content {
+                case .loading:
+                    ShelfPlaceholder()
+                case .failed:
+                    VStack(alignment: .leading, spacing: 6) {
+                        ShelfHeader(title: tab.label)
+                        note("\(tab.label) didn't respond.")
+                    }
+                case .loaded(let all):
+                    let items = all.filter { typeFilter.matches($0.type) }
+                    if !items.isEmpty {
+                        Shelf(title: tab.label, items: items) { item, _ in
+                            let baseURL = model.baseURL(for: item, tab: tab)
+                            PosterCard(item: item, addonBaseURL: baseURL) {
+                                selected = MetaSelection(
+                                    item: item,
+                                    addonBaseURL: baseURL,
+                                    related: items
                                 )
                             }
+                        }
                     }
-                    .buttonStyle(.pressable)
                 }
             }
-            .padding(.trailing, Phone.pagePadding)
         }
-        .scrollClipDisabled()
     }
 
     @ViewBuilder
-    private var grid: some View {
-        if let tab {
-            switch tab.content {
-            case .loading:
-                LazyVGrid(columns: columns, spacing: Phone.posterSpacing) {
-                    ForEach(0..<9, id: \.self) { _ in PosterPlaceholder() }
-                }
-                .padding(.horizontal, Phone.pagePadding)
-            case .failed:
-                note("\(tab.label) didn't respond.")
-            case .loaded(let all):
-                let items = all.filter { typeFilter.matches($0.type) }
-                if items.isEmpty {
-                    note("Nothing in \(tab.label) is a \(typeFilter == .movies ? "movie" : "show").")
-                }
-                LazyVGrid(columns: columns, spacing: Phone.posterSpacing + 6) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        let baseURL = model.baseURL(for: item, tab: tab)
-                        PosterCard(item: item, addonBaseURL: baseURL) {
-                            selected = MetaSelection(
-                                item: item,
-                                addonBaseURL: baseURL,
-                                related: items
-                            )
-                        }
-                        #if os(macOS)
-                        .standingAside(for: expansion, slot: index, metrics: rowMetrics)
-                        #endif
+    private func single(_ tab: FolderTab) -> some View {
+        switch tab.content {
+        case .loading:
+            ShelfPlaceholder()
+        case .failed:
+            note("\(tab.label) didn't respond.")
+        case .loaded(let all):
+            let items = all.filter { typeFilter.matches($0.type) }
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: Phone.posterWidth * 0.88), spacing: Phone.posterSpacing)],
+                spacing: 18
+            ) {
+                ForEach(items) { item in
+                    let baseURL = model.baseURL(for: item, tab: tab)
+                    PosterCard(item: item, addonBaseURL: baseURL, width: (Phone.posterWidth * 0.88).rounded()) {
+                        selected = MetaSelection(
+                            item: item,
+                            addonBaseURL: baseURL,
+                            related: items
+                        )
                     }
                 }
-                .padding(.horizontal, Phone.pagePadding)
-                #if os(macOS)
-                .environment(expansion)
-                #endif
-            }
-        } else if model.isLoading {
-            LazyVGrid(columns: columns, spacing: Phone.posterSpacing) {
-                ForEach(0..<9, id: \.self) { _ in PosterPlaceholder() }
             }
             .padding(.horizontal, Phone.pagePadding)
-        } else {
-            note("Nothing in this folder could be loaded.")
         }
     }
 

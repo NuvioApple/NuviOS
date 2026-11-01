@@ -125,7 +125,9 @@ final class CollectionFolderModel: ObservableObject {
             + resolved.map(\.tab)
 
         let client = client
-        let results: [(String, Result<[MetaItem], Error>, String)] = await withTaskGroup(
+        // Each row is filled the moment its own catalog answers, so one slow
+        // or dead source doesn't hold the rest of the folder behind it.
+        await withTaskGroup(
             of: (String, Result<[MetaItem], Error>, String).self
         ) { group in
             for (source, entry, tab) in resolved {
@@ -144,19 +146,8 @@ final class CollectionFolderModel: ObservableObject {
                     }
                 }
             }
-            var collected: [(String, Result<[MetaItem], Error>, String)] = []
-            for await result in group { collected.append(result) }
-            return collected
-        }
-
-        for (id, result, baseURL) in results {
-            guard let index = tabs.firstIndex(where: { $0.id == id }) else { continue }
-            switch result {
-            case .success(let items):
-                tabs[index].content = .loaded(items)
-                for item in items where origins[item.id] == nil { origins[item.id] = baseURL }
-            case .failure(let error):
-                tabs[index].content = .failed(error.localizedDescription)
+            for await (id, result, baseURL) in group {
+                self.apply(result, to: id, baseURL: baseURL)
             }
         }
 
@@ -177,6 +168,17 @@ final class CollectionFolderModel: ObservableObject {
         }
 
         selection = min(selection, max(tabs.count - 1, 0))
+    }
+
+    private func apply(_ result: Result<[MetaItem], Error>, to id: String, baseURL: String) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        switch result {
+        case .success(let items):
+            tabs[index].content = .loaded(items)
+            for item in items where origins[item.id] == nil { origins[item.id] = baseURL }
+        case .failure(let error):
+            tabs[index].content = .failed(error.localizedDescription)
+        }
     }
 
     func baseURL(for item: MetaItem, tab: FolderTab) -> String {
@@ -212,12 +214,28 @@ final class CollectionFolderModel: ObservableObject {
     ) -> String {
         let base = catalog?.name?.trimmed.nilIfBlank
             ?? fallbackID.replacingOccurrences(of: "-", with: " ").capitalized
+        let named = typed(base, type: type)
         guard let genre = genre?.trimmed, !genre.isEmpty,
               // Some addons hand back a literal "None" as the extra value
               // for "no genre filter" rather than omitting it — that reads
               // as a real genre unless it's caught here.
               genre.localizedCaseInsensitiveCompare("none") != .orderedSame
-        else { return base }
-        return base.localizedCaseInsensitiveContains(genre) ? base : "\(base) · \(genre)"
+        else { return named }
+        return named.localizedCaseInsensitiveContains(genre) ? named : "\(named) · \(genre)"
+    }
+
+    /// "Latest" alone doesn't say whether it is films or shows, so a row says
+    /// so unless its own name already does.
+    private static func typed(_ name: String, type: String) -> String {
+        let kind: String
+        switch type.lowercased() {
+        case "movie": kind = "Movies"
+        case "series": kind = "TV Shows"
+        default: return name
+        }
+        let words = ["movie", "film", "series", "show", "tv"]
+        let lower = name.lowercased()
+        if words.contains(where: { lower.contains($0) }) { return name }
+        return "\(name) · \(kind)"
     }
 }

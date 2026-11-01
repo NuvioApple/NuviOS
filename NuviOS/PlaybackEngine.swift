@@ -177,3 +177,12 @@ protocol PlaybackEngineDelegate: AnyObject {
     /// needs. Fires several times a second, so it does no work of its own.
     func engineDidUpdate(_ engine: PlaybackEngine)
 }
+
+/// Simulators always play trailers muted, whatever the hero asks for.
+let runsInSimulator: Bool = {
+    #if targetEnvironment(simulator)
+    true
+    #else
+    false
+    #endif
+}()

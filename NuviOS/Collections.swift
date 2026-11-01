@@ -56,6 +56,9 @@ struct CollectionFolder: Identifiable, Equatable {
     let hideTitle: Bool
     let heroBackdropURL: String?
     let titleLogoURL: String?
+    /// A video the author attached to play in the hero while the tile is
+    /// focused (TV only). Android's `heroVideoUrl`.
+    let heroVideoURL: String?
     let sources: [CollectionSource]
 
     /// The animation to play, if the author attached one and left it on.
@@ -114,6 +117,7 @@ private struct WireFolder: Decodable {
     let hideTitle: Bool?
     let heroBackdropUrl: String?
     let titleLogoUrl: String?
+    let heroVideoUrl: String?
     let sources: [WireSource]?
     /// The pre-`sources` format, kept for blobs written by older builds.
     let catalogSources: [WireCatalogSource]?
@@ -193,6 +197,7 @@ extension MediaCollection {
             hideTitle: wire.hideTitle ?? false,
             heroBackdropURL: wire.heroBackdropUrl?.trimmed.nilIfBlank,
             titleLogoURL: wire.titleLogoUrl?.trimmed.nilIfBlank,
+            heroVideoURL: wire.heroVideoUrl?.trimmed.nilIfBlank,
             sources: sources
         )
     }

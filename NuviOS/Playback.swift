@@ -377,12 +377,14 @@ struct StreamPicker: View {
             .navigationTitle(isSeries && activeVideo == nil ? "Episodes" : "Play")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                // `.cancellationAction` is the leading Close on iOS and, on the
+                // Mac, a button that Escape also triggers.
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
                 }
             }
-            #endif
         }
         .preferredColorScheme(.dark)
         .overlay {

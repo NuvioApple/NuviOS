@@ -12,6 +12,9 @@ struct BrowseScreen: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var profiles: ProfileStore
     @EnvironmentObject private var library: LibraryStore
+    #if os(tvOS)
+    @EnvironmentObject private var tmdb: TmdbSettings
+    #endif
     @ObservedObject var model: HomeViewModel
 
     /// Which destination this screen is, so a press on that destination in
@@ -29,6 +32,12 @@ struct BrowseScreen: View {
     @State private var openFolder: OpenFolder?
     @State private var scrollProgress: Double = 0
     @State private var genre: String?
+    #if os(tvOS)
+    @State private var heroFocus = HeroFocus()
+    /// Bumped when focus returns to the hero, to scroll back up to it.
+    @State private var heroReturn = 0
+    @Namespace private var focusSpace
+    #endif
 
     private var hasBillboard: Bool { showsHero && !model.heroItems.isEmpty }
 
@@ -87,7 +96,7 @@ struct BrowseScreen: View {
             }
             .platformHiddenNavigationBar()
             .navigationDestination(item: $selected) { selection in
-                DetailView(selection: selection)
+                TitleDetail(selection: selection)
             }
             .navigationDestination(item: $openFolder) { open in
                 FolderScreen(open: open, addons: model.addons)
@@ -127,28 +136,78 @@ struct BrowseScreen: View {
     // MARK: Content
 
     private var content: some View {
+        #if os(tvOS)
+        // One hero, pinned above the shelves — Peacock's TV layout. It shows
+        // whichever title focus is on, trailer included, while the rows
+        // scroll beneath it. Laid out by hand, edge to edge: the hero starts
+        // at the top of the screen (its copy sits at the bottom, clear of the
+        // tab bar) and the shelves run to the bottom edge.
+        shelves
+        .focusScope(focusSpace)
+        .ignoresSafeArea(edges: [.top, .bottom])
+        .environment(heroFocus)
+        // Play/Pause is the remote's one mute button.
+        .onPlayPauseCommand { tmdb.trailerSound.toggle() }
+        #else
+        shelves
+        #endif
+    }
+
+    private var shelves: some View {
+        ScrollViewReader { proxy in
+            shelfScroll
+            #if os(tvOS)
+                // The system parks a focused row wherever its own rules say,
+                // which left the row's title half under the hero. Say where
+                // instead: the row's top, just beneath the hero.
+                .onChange(of: heroFocus.row) { _, row in
+                    guard let row else { return }
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        proxy.scrollTo(row, anchor: UnitPoint(x: 0.5, y: 0.08))
+                    }
+                }
+                .onChange(of: heroReturn) { _, _ in
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        proxy.scrollTo("hero", anchor: .top)
+                    }
+                }
+            #endif
+        }
+    }
+
+    private var shelfScroll: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Phone.shelfSpacing) {
+                #if os(tvOS)
                 if hasBillboard {
-                    // Same feature, two shapes. A thumb gets the paging
-                    // billboard with its muted trailer; a remote gets the
-                    // Ken Burns carousel, whose controls are focusable —
-                    // a swipe-paged hero would trap focus on a television.
-                    #if os(tvOS)
-                    HeroCarousel(items: model.heroItems, metrics: heroMetrics) { hero in
-                        selected = MetaSelection(item: hero.item, addonBaseURL: hero.addonBaseURL)
-                    }
-                    .padding(.bottom, 2)
-                    #else
-                    Billboard(items: model.heroItems, isOnScreen: scrollProgress < 0.4) { hero in
-                        selected = MetaSelection(item: hero.item, addonBaseURL: hero.addonBaseURL)
-                    }
-                    .padding(.bottom, 2)
-                    #endif
+                    // The first page: a carousel of its own, with the top of
+                    // the next row peeking beneath it.
+                    HomeHero(
+                        items: model.heroItems,
+                        metrics: heroMetrics,
+                        onOpen: { hero in
+                            selected = MetaSelection(item: hero.item, addonBaseURL: hero.addonBaseURL)
+                        },
+                        onFocus: { heroReturn += 1 },
+                        focusSpace: focusSpace
+                    )
+                    .id("hero")
                 } else {
                     // Clears the floating bar, which is opaque on these tabs.
                     Color.clear.frame(height: 40)
                 }
+                #else
+                if hasBillboard {
+                    // A thumb gets the paging billboard with its muted trailer.
+                    Billboard(items: model.heroItems, isOnScreen: scrollProgress < 0.4) { hero in
+                        selected = MetaSelection(item: hero.item, addonBaseURL: hero.addonBaseURL)
+                    }
+                    .padding(.bottom, 2)
+                } else {
+                    // Clears the floating bar, which is opaque on these tabs.
+                    Color.clear.frame(height: 40)
+                }
+                #endif
 
                 if !showsHero, !genres.isEmpty {
                     GenreBar(genres: genres, selection: $genre)
@@ -427,7 +486,8 @@ private struct BillboardPage: View {
             if !tagline.isEmpty, !isTrailerVisible {
                 Text(tagline)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.75))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .shadow(color: .black.opacity(0.7), radius: 4)
                     .lineLimit(1)
                     .padding(.horizontal, 20)
                     .transition(.opacity)
@@ -540,7 +600,7 @@ private struct BillboardPage: View {
             addonBaseURL: hero.addonBaseURL,
             apiKey: tmdb.effectiveAPIKey
         )
-        async let beat: Void = Task.sleep(for: .seconds(2.5))
+        async let beat: Void = Task.sleep(for: .seconds(0.8))
 
         let key = await resolved
         try? await beat
@@ -601,13 +661,10 @@ private struct BillboardPage: View {
                 // Addons ship dark logos as often as white ones, and a dark one
                 // on a darkened backdrop is unreadable. A soft lift behind it
                 // rescues those without touching how a white logo looks.
-                RadialGradient(
-                    colors: [.white.opacity(0.16), .clear],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: 150
-                )
-                .blendMode(.plusLighter)
+                Ellipse()
+                    .fill(.white.opacity(0.14))
+                    .blur(radius: 24)
+                    .padding(-12)
             }
         } else {
             typeset
@@ -643,9 +700,10 @@ private struct BillboardPage: View {
                     .font(.subheadline.weight(.bold))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
+                    .foregroundStyle(.black)
             }
             .buttonStyle(.glassProminent)
-            .tint(palette.accent)
+            .tint(.white)
 
             PlatformShareButton(text: shareText, width: 62)
         }

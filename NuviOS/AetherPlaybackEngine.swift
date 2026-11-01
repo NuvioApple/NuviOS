@@ -133,8 +133,10 @@ final class AetherPlaybackEngine: PlaybackEngine {
                 guard let self else { return }
                 switch phase {
                 case .rebuffering, .stalled:
+                    PlayerMetrics.markStall(true)
                     self.delegate?.engine(self, isBuffering: true)
                 case .playing, .paused, .seeking, .ended:
+                    PlayerMetrics.markStall(false)
                     self.delegate?.engine(self, isBuffering: false)
                 default:
                     break
@@ -149,6 +151,7 @@ final class AetherPlaybackEngine: PlaybackEngine {
             .sink { [weak self] ready in
                 guard let self, ready else { return }
                 self.hasPresented = true
+                PlayerMetrics.markFirstFrame()
                 self.delegate?.engineDidStartPlaying(self)
             }
             .store(in: &subscriptions)
@@ -227,7 +230,11 @@ final class AetherPlaybackEngine: PlaybackEngine {
     func pause() { engine.pause() }
 
     func seek(toSeconds seconds: Double) {
-        Task { await engine.seek(to: seconds) }
+        PlayerMetrics.markSeekStarted()
+        Task {
+            await engine.seek(to: seconds)
+            PlayerMetrics.markSeekFinished()
+        }
     }
 
     func setRate(_ rate: Float) { engine.setRate(rate) }

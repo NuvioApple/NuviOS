@@ -558,9 +558,10 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
 
 - (NSURL *)originURL {
   if (!_originURL) {
-    NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
-    NSString *stringURL = [[NSString stringWithFormat:@"http://%@", bundleId] lowercaseString];
-    _originURL = [NSURL URLWithString:stringURL];
+    // An https origin that isn't youtube.com itself: YouTube answers a
+    // youtube.com origin with error 152 and a plain-http bundle-id origin
+    // with 153, and either way the trailer never starts.
+    _originURL = [NSURL URLWithString:@"https://www.youtube-nocookie.com"];
   }
   return _originURL;
 }

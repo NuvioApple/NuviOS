@@ -205,6 +205,11 @@ struct ContinueWatchingCard: View {
     let action: () -> Void
 
     @Environment(\.palette) private var palette
+    @Environment(\.shelfBand) private var shelfBand
+    @Environment(\.shelfID) private var shelfID
+    #if os(tvOS)
+    @Environment(HeroFocus.self) private var heroFocus: HeroFocus?
+    #endif
 
     private var height: CGFloat { (width * 9 / 16).rounded() }
 
@@ -224,12 +229,22 @@ struct ContinueWatchingCard: View {
                 .scaleEffect(isFocused ? 1.06 : 1)
                 .zIndex(isFocused ? 1 : 0)
                 .animation(.spring(response: 0.34, dampingFraction: 0.74), value: isFocused)
+                #if os(tvOS)
+                .onChange(of: isFocused) { _, focused in
+                    if focused {
+                        heroFocus?.focus(HeroItem(item: item.item, addonBaseURL: item.addonBaseURL), row: shelfID)
+                    }
+                }
+                #endif
             }
+            .padding(.top, Phone.focusSlack + shelfBand)
+            .padding(.bottom, Phone.focusSlack)
         }
         #if os(tvOS)
-        // The TV has no press to respond to; it has focus, and a resume card
-        // lifts on focus the way the poster cards beside it do.
-        .buttonStyle(.plain)
+        // The card draws its own focus — lift, ring, shadow. The system's
+        // `.plain` style adds a white platter under it, which swallows the
+        // caption (white on white), so this style draws nothing of its own.
+        .buttonStyle(BarePlatterStyle())
         #else
         .buttonStyle(.pressable)
         #endif

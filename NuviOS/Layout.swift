@@ -74,11 +74,11 @@ struct LayoutMetrics: Equatable {
     var heroHeight: CGFloat {
         let base = height > 0 ? height : width * 9 / 16
         #if os(tvOS)
-        // A television opens on one frame. The hero takes nearly the whole
-        // screen and the first shelf only crests the bottom edge, so the app
-        // reads as artwork first and as a menu second.
-        let ideal = base * lerp(0.62, 0.90)
-        let ceiling = height > 0 ? height * 0.93 : lerp(620, 1010)
+        // Peacock's stage: a little over half the screen, pinned. The copy
+        // needs about 430 points below the tab bar, and a whole row — title,
+        // card and caption, about 360 points — has to fit beneath it.
+        let ideal: CGFloat = 540
+        let ceiling: CGFloat = 540
         #else
         let ideal = base * lerp(0.62, 0.72)
         let ceiling = height > 0 ? min(height * 0.86, lerp(620, 900)) : lerp(620, 900)
@@ -89,7 +89,7 @@ struct LayoutMetrics: Equatable {
     #if os(tvOS)
     var heroTitleSize: CGFloat { lerp(34, 104) }
     var heroLogoMaxWidth: CGFloat { min(width * lerp(0.7, 0.40), lerp(280, 780)) }
-    var heroLogoMaxHeight: CGFloat { lerp(90, 270) }
+    var heroLogoMaxHeight: CGFloat { lerp(90, 150) }
     #else
     var heroTitleSize: CGFloat { lerp(34, 74) }
     var heroLogoMaxWidth: CGFloat { min(width * lerp(0.7, 0.34), lerp(280, 620)) }

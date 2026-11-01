@@ -37,8 +37,12 @@ struct ProfileGate<Content: View>: View {
 
     var body: some View {
         ZStack {
-            content()
-                .opacity(needsChoice ? 0 : 1)
+            // Not built at all until a profile is picked: a hidden copy would
+            // still load its shelves and start the hero's trailer behind the
+            // chooser.
+            if !needsChoice {
+                content()
+            }
 
             if needsChoice {
                 chooser

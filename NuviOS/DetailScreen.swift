@@ -1,11 +1,26 @@
 import SwiftUI
 
+/// Where a title opens: the television's own page on tvOS, laid out in TV
+/// metrics, and the phone's page everywhere else.
+struct TitleDetail: View {
+    let selection: MetaSelection
+
+    var body: some View {
+        #if os(tvOS)
+        MetaDetailView(selection: selection)
+        #else
+        DetailView(selection: selection)
+        #endif
+    }
+}
+
 /// A title's page: full-bleed backdrop, title treatment, the facts, and the
 /// long-form detail underneath — the shape every streaming service uses.
 struct MetaDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.palette) private var palette
     @EnvironmentObject private var tmdb: TmdbSettings
+    @EnvironmentObject private var library: LibraryStore
 
     let selection: MetaSelection
 
@@ -15,6 +30,12 @@ struct MetaDetailView: View {
     /// The episode the viewer picked from the inline list, if any.
     @State private var playingVideo: MetaVideo?
     @State private var chosenSeason: Int?
+    #if os(tvOS)
+    /// The viewer's own trailer, played in the full player.
+    @State private var trailerRequest: PlaybackRequest?
+    @State private var isFindingTrailer = false
+    @State private var hasTrailer = false
+    #endif
     /// Photos for the cast list, keyed by name — `nil` until TMDB answers (or
     /// there's no key to ask it with), so the bubbles fall back to monograms
     /// rather than waiting on a blank space.
@@ -74,6 +95,16 @@ struct MetaDetailView: View {
         }
         #if os(tvOS)
         .onExitCommand { dismiss() }
+        .platformPlayerCover(item: $trailerRequest)
+        .task(id: tmdb.trailerioURL) {
+            // Only offer the button once an addon is known to have the title.
+            hasTrailer = await !TrailerioClient.shared.trailers(
+                imdbID: item.id,
+                type: item.type,
+                bases: tmdb.trailerBases,
+                purpose: .feature
+            ).isEmpty
+        }
         #endif
         .task {
             do {
@@ -151,7 +182,11 @@ struct MetaDetailView: View {
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        #if os(tvOS)
+        .ignoresSafeArea(edges: [.top, .horizontal])
+        #else
         .ignoresSafeArea(edges: .top)
+        #endif
     }
 
     // MARK: Blocks
@@ -227,6 +262,31 @@ struct MetaDetailView: View {
                     NuvioButtonStyle(kind: .prominent, icon: "play.fill", compact: metrics.isCompact)
                 )
 
+                #if os(tvOS)
+                if hasTrailer {
+                    Button(isFindingTrailer ? "Finding trailer…" : "Trailer") {
+                        playTrailer()
+                    }
+                    .buttonStyle(
+                        NuvioButtonStyle(kind: .glass, icon: "film", compact: metrics.isCompact)
+                    )
+                    .disabled(isFindingTrailer)
+                }
+                #endif
+
+                Button {
+                    library.toggle(item, addonBaseURL: selection.addonBaseURL)
+                } label: {
+                    Text(library.contains(item) ? "In My List" : "My List")
+                }
+                .buttonStyle(
+                    NuvioButtonStyle(
+                        kind: .glass,
+                        icon: library.contains(item) ? "checkmark" : "plus",
+                        compact: metrics.isCompact
+                    )
+                )
+
                 Button("Back to browsing") { dismiss() }
                     .buttonStyle(
                         NuvioButtonStyle(kind: .glass, icon: "chevron.left", compact: metrics.isCompact)
@@ -262,6 +322,19 @@ struct MetaDetailView: View {
             }
         }
     }
+
+    #if os(tvOS)
+    private func playTrailer() {
+        isFindingTrailer = true
+        Task {
+            trailerRequest = await TrailerioClient.shared.playbackRequest(
+                for: item,
+                bases: tmdb.trailerBases
+            )
+            isFindingTrailer = false
+        }
+    }
+    #endif
 
     private var firstEpisode: MetaVideo? {
         detail?.seasons.first?.episodes.first
@@ -377,6 +450,10 @@ struct MetaDetailView: View {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .stroke(.white.opacity(0.08), lineWidth: 1)
                 )
+                #if os(tvOS)
+                // Reachable by focus, so the page can scroll to the end.
+                .focusable()
+                #endif
             }
         }
     }
@@ -473,8 +550,28 @@ private struct CastBubble: View {
                 .multilineTextAlignment(.center)
                 .frame(width: size * 1.35)
         }
+        #if os(tvOS)
+        // Nothing here acts, but a focus-driven page only scrolls to what can
+        // take focus, so without this the cast (and what is under it) is
+        // out of reach.
+        .focusable()
+        .modifier(CastFocusLift())
+        #endif
     }
 }
+
+#if os(tvOS)
+/// Lifts a focused cast member a little so the viewer can see where they are.
+private struct CastFocusLift: ViewModifier {
+    func body(content: Content) -> some View {
+        FocusReader { isFocused in
+            content
+                .scaleEffect(isFocused ? 1.12 : 1)
+                .animation(.easeOut(duration: 0.15), value: isFocused)
+        }
+    }
+}
+#endif
 
 /// A season selector chip. Plain button style so tvOS still draws focus on the
 /// shape rather than a system bezel.
@@ -528,6 +625,7 @@ private struct EpisodeCard: View {
 
     var body: some View {
         Button(action: action) {
+            FocusReader { isFocused in
             VStack(alignment: .leading, spacing: metrics.isCompact ? 8 : 12) {
                 ZStack {
                     RemoteImage(url: thumbnailURL) {
@@ -552,7 +650,7 @@ private struct EpisodeCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: metrics.isCompact ? 12 : 18, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: metrics.isCompact ? 12 : 18, style: .continuous)
-                        .stroke(.white.opacity(0.10), lineWidth: 1)
+                        .stroke(.white.opacity(isFocused ? 1 : 0.10), lineWidth: isFocused ? 4 : 1)
                 )
 
                 Text(heading)
@@ -574,7 +672,10 @@ private struct EpisodeCard: View {
             }
             .frame(width: width, alignment: .leading)
             .contentShape(Rectangle())
+            }
         }
-        .buttonStyle(.plain)
+        // The card draws its own focus, so the system's white bezel doesn't
+        // sit behind the title and synopsis and swallow their text.
+        .buttonStyle(.pressableCard)
     }
 }

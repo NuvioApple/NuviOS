@@ -1,110 +1,284 @@
 import SwiftUI
 
-// The television's hero treatment: a Ken Burns backdrop carousel with its own
-// focusable controls, plus the skeleton that holds its space while the first
-// catalog loads.
+// The television's hero, in the shape Peacock's 2022 TV redesign gave it: a
+// stage at the top of Home, full-bleed key art — or the title's trailer —
+// with the logo, a line of facts, the synopsis and its Details / My List
+// buttons set bottom-left. It is a carousel of its own: it fills the first
+// screenful, leaving only the top of the next row peeking beneath it, and
+// the shelves take focus once the viewer moves down.
 //
-// The phone shell's `Billboard` is the same idea built for a thumb; on a
-// ten-foot screen the artwork is the whole point, so `BrowseScreen` draws this
-// instead. Everything else that used to live here — the shelves, the poster
-// cards, the filter bar — is now shared with iOS and lives in
-// `PhoneComponents` and `BrowseScreen`.
+// The phone shell's `Billboard` is the same idea built for a thumb.
 #if os(tvOS)
 
-/// A rotating showcase of a handful of titles, each with its backdrop, title
-/// treatment and a one-line pitch — the opening shot of every streaming app.
-struct HeroCarousel: View {
-    let items: [HeroItem]
-    let metrics: LayoutMetrics
-    let onSelect: (HeroItem) -> Void
+/// The title the viewer's focus is on, for the hero above the shelves.
+///
+/// There is one hero. Cards don't play anything themselves; they say "this is
+/// where focus is" and the hero swaps its artwork, copy and trailer to match.
+@Observable
+@MainActor
+final class HeroFocus {
+    /// A title card has focus. `nil` until one has been focused; the hero
+    /// rotates on its own until then.
+    private(set) var item: HeroItem?
+    /// A collection tile has focus — the hero shows that collection's header.
+    private(set) var collection: CollectionHero?
+    /// The row that card belongs to, so the page can scroll that row into place.
+    private(set) var row: String?
 
-    /// The hero's own controls, so the carousel can tell when the viewer is
-    /// acting on the current title.
-    private enum Control: Hashable { case play, details, myList, next }
-
-    /// A title whose sources are ready to be shown.
-    private struct PlayTarget: Identifiable {
-        let selection: MetaSelection
-        let detail: MetaDetail
-
-        var id: String { "\(selection.item.type)|\(selection.item.id)" }
+    func focus(_ hero: HeroItem, row: String?) {
+        if hero != item { item = hero }
+        if collection != nil { collection = nil }
+        if row != self.row { self.row = row }
     }
 
-    @EnvironmentObject private var library: LibraryStore
-    @Environment(\.palette) private var palette
-    @State private var index = 0
-    @State private var playTarget: PlayTarget?
-    @State private var isPreparingPlay = false
-    @FocusState private var focusedControl: Control?
+    func focus(collection: CollectionHero, row: String?) {
+        if collection != self.collection { self.collection = collection }
+        if row != self.row { self.row = row }
+    }
+}
 
-    /// How many seconds each title holds the screen before the carousel moves
-    /// on, and how often the rotation checks in.
+/// What a collection tile shows the hero: the same header its own page opens
+/// with — backdrop (or the author's animation), then the logo or the name.
+struct CollectionHero: Equatable {
+    let id: String
+    let title: String
+    let collectionTitle: String
+    let backdropURL: URL?
+    let animatedURL: URL?
+    let logoURL: URL?
+    /// The folder's own hero video, if its author attached one.
+    let videoURL: URL?
+
+    init(folder: CollectionFolder, collection: MediaCollection) {
+        id = "\(collection.id)|\(folder.id)"
+        title = folder.title
+        collectionTitle = collection.title
+        backdropURL = (folder.heroBackdropURL ?? collection.backdropImageURL).flatMap(URL.init(string:))
+            ?? folder.coverImageURL.flatMap(URL.init(string:))
+        animatedURL = folder.animatedCoverURL
+        logoURL = folder.titleLogoURL.flatMap(URL.init(string:))
+        videoURL = folder.heroVideoURL.flatMap(URL.init(string:))
+    }
+}
+
+struct HomeHero: View {
+    let items: [HeroItem]
+    let metrics: LayoutMetrics
+    /// Opens a title's detail page.
+    let onOpen: (HeroItem) -> Void
+    /// Focus came back to the hero, so the page should scroll back up to it.
+    let onFocus: () -> Void
+    /// The screen's focus scope, so Details can be its preferred landing.
+    let focusSpace: Namespace.ID
+
+    private enum Control { case entry, details, list }
+    @FocusState private var focusedControl: Control?
+    @EnvironmentObject private var library: LibraryStore
+    /// How much of the hero is on screen; a trailer off screen is paused.
+    @State private var isVisible = true
+
+    @Environment(\.palette) private var palette
+    @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var tmdb: TmdbSettings
+
+    @State private var index = 0
+    /// The trailer is on screen. The rotation holds still while it is.
+    @State private var isTrailerPlaying = false
+
+    /// How much of the next row shows under the hero: its title and the top
+    /// of its cards, enough to say "there is more below".
+    private static let peek: CGFloat = 170
+
+    /// How many seconds each title holds the stage before it rotates on.
     private static let dwellSeconds = 9
 
+    /// The hero is a carousel: it pages through the featured titles on its
+    /// own, whatever the shelves below have focus on.
     private var current: HeroItem { items[min(index, items.count - 1)] }
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            backdrop
-            scrims
-            content
-
-            // Centred under the frame rather than tucked under the copy: the
-            // dots describe the whole hero, not the column of type.
-            if items.count > 1 {
-                PageDots(count: items.count, index: index)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.bottom, metrics.lerp(14, 34))
+        content
+            // The first screenful, less a strip that lets the next row peek in.
+            .containerRelativeFrame(.vertical, alignment: .bottomLeading) { length, _ in
+                length - Self.peek
             }
+            .frame(maxWidth: .infinity, alignment: .bottomLeading)
+            // The whole stage is one focus target, so moving down from the
+            // tab bar lands on its buttons rather than on whichever card
+            // happens to sit nearest underneath.
+            .focusSection()
+            // Coming down from the tab bar lands here, not on a card.
+            .defaultFocus($focusedControl, .details)
+            // The artwork runs to the edges of the screen; only the copy stays
+            // inside the television's safe area. It is a background so that
+            // reaching past the safe area adds nothing to the hero's own height.
+            .background(alignment: .bottom) {
+                ZStack {
+                    palette.background
+                    backdrop
+                    scrims
+                }
+                // Fades out into the page rather than ending on an edge: the
+                // scrims darken the left side all the way down, so where the
+                // hero stopped there was a visible step from near-black to the
+                // page colour.
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black, location: 0.72),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .ignoresSafeArea(edges: [.top, .horizontal])
+            }
+            .overlay(alignment: .bottomTrailing) { soundBadge }
+            .overlay(alignment: .bottomLeading) { pageDots }
+            .overlay(alignment: .top) { entryTarget }
+            .onScrollVisibilityChange(threshold: 0.3) { isVisible = $0 }
+            .onChange(of: focusedControl) { _, control in
+                if control != nil { onFocus() }
+            }
+            .task(id: items.count) { await autoAdvance() }
+    }
+
+    /// An invisible, full-width focus target just under the tab bar. Moving
+    /// down from the bar picks the nearest focusable thing below it, which
+    /// would otherwise be a card in the first row, past the stage's buttons;
+    /// this is nearer, and hands focus straight to Details. It steps out of
+    /// the way while a button holds focus so up still reaches the bar.
+    private var entryTarget: some View {
+        Color.clear
+            .frame(maxWidth: .infinity)
+            .frame(height: 2)
+            .padding(.top, 140)
+            .focusable(focusedControl == nil || focusedControl == .entry)
+            .focused($focusedControl, equals: .entry)
+            .onChange(of: focusedControl) { _, control in
+                if control == .entry { focusedControl = .details }
+            }
+            .accessibilityHidden(true)
+    }
+
+    /// Where the carousel is, one dot per featured title.
+    @ViewBuilder
+    private var pageDots: some View {
+        if items.count > 1 {
+            HStack(spacing: 8) {
+                ForEach(items.indices, id: \.self) { i in
+                    Capsule()
+                        .fill(.white.opacity(i == index ? 0.95 : 0.35))
+                        .frame(width: i == index ? 22 : 8, height: 8)
+                }
+            }
+            .animation(.easeInOut(duration: 0.3), value: index)
+            .padding(.horizontal, metrics.pagePadding)
+            .padding(.bottom, 8)
+            .accessibilityHidden(true)
         }
-        .frame(height: metrics.heroHeight)
-        .frame(maxWidth: .infinity)
-        .clipped()
-        .task(id: items.count) { await autoAdvance() }
-        // Play goes straight to the sources, the way the primary control on
-        // every streaming home screen does. The meta is fetched first because
-        // a series has to open on its episodes, not on the series id.
-        .fullScreenCover(item: $playTarget) { target in
-            StreamPicker(selection: target.selection, detail: target.detail)
+    }
+
+    /// Which way the sound is set, shown only while a trailer is on screen.
+    /// Play/Pause on the remote flips it.
+    @ViewBuilder
+    private var soundBadge: some View {
+        if isTrailerPlaying {
+            Image(systemName: tmdb.trailerSound ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                .font(.system(size: metrics.lerp(14, 24), weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: metrics.lerp(30, 56), height: metrics.lerp(30, 56))
+                .glassEffect(.regular, in: .circle)
+                .padding(.trailing, metrics.pagePadding)
+                .padding(.bottom, metrics.lerp(24, 44))
+                .transition(.opacity)
+                .accessibilityLabel(tmdb.trailerSound ? "Trailer sound on" : "Trailer sound off")
         }
     }
 
     // MARK: Layers
 
+    /// The picture sits on the right at its natural 16:9, as tall as the
+    /// stage, and fades in across its left edge into the panel the copy is
+    /// set on — Peacock's arrangement. Filling the whole width instead crops a
+    /// 16:9 frame to a thin band, which loses the picture and puts a
+    /// trailer's own lettering behind the title.
     private var backdrop: some View {
-        ZStack {
-            ForEach(Array(items.enumerated()), id: \.element.id) { offset, hero in
-                if offset == index {
-                    KenBurnsImage(
-                        url: AddonClient.resolve(
-                            hero.item.background ?? hero.item.poster,
-                            relativeTo: hero.addonBaseURL
-                        )
+        GeometryReader { geo in
+            // A little taller than the stage, hanging off the top of the
+            // screen: the stage's own height stopped 16 points short of it.
+            let height = geo.size.height + 60
+            let width = height * 16 / 9
+
+            ZStack {
+                KenBurnsImage(
+                    url: AddonClient.resolve(
+                        current.item.background ?? current.item.poster,
+                        relativeTo: current.addonBaseURL
                     )
-                    .transition(.opacity)
-                }
+                )
+                .id(current.id)
+                .transition(.opacity)
+
+                // The trailer, over the still. It starts a beat after the
+                // title takes the stage, and fades in once it has a frame, so
+                // a slow lookup never shows a black one.
+                FocusTrailerPreview(
+                    item: current.item,
+                    isActive: scenePhase == .active && isVisible,
+                    delay: .milliseconds(700),
+                    onPlayingChange: { isTrailerPlaying = $0 },
+                    // When the trailer ends the title gets a few more seconds
+                    // on stage, then the carousel moves on. A focused button,
+                    // or a change of title in the meantime, cancels it.
+                    onFinish: {
+                        let finished = current.id
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(5))
+                            guard focusedControl == nil, current.id == finished else { return }
+                            withAnimation(.easeInOut(duration: 0.7)) {
+                                index = (index + 1) % items.count
+                            }
+                        }
+                    }
+                )
+                .id(current.id)
+                .aspectRatio(16 / 9, contentMode: .fill)
+                // Many trailers carry their own letterbox bars, and some a
+                // title card in them; drawn as they are, the bars read as a
+                // hard edge across the stage. A little zoom lets the stage's
+                // own clip take most of them off.
+                .scaleEffect(1.2)
             }
+            .animation(.easeInOut(duration: 0.5), value: current.id)
+            .frame(width: width, height: height)
+            .clipped()
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black.opacity(0.55), location: 0.16),
+                        .init(color: .black, location: 0.42),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .bottomTrailing)
         }
-        .animation(.easeInOut(duration: 0.9), value: index)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
     }
 
-    /// Three layers, in the order a colourist would grade them: a light top
-    /// wash for the chrome, a long bottom ramp that carries the artwork into
-    /// the app background, and a soft left-hand falloff under the copy.
-    ///
-    /// The ramps are deliberately late and deliberately gradual. The earlier
-    /// pass darkened the middle of the frame, which is exactly where the
-    /// picture is — the backdrop read as a grey plate rather than as a still
-    /// from the film.
+    /// A light wash under the tab bar, a ramp that carries the artwork down
+    /// into the page, and a soft falloff on the left under the copy.
     private var scrims: some View {
         ZStack {
             LinearGradient(
                 stops: [
                     .init(color: .black.opacity(0.55), location: 0),
-                    .init(color: .black.opacity(0.18), location: 0.14),
-                    .init(color: .clear, location: 0.34),
+                    .init(color: .black.opacity(0.18), location: 0.16),
+                    .init(color: .clear, location: 0.36),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -112,10 +286,9 @@ struct HeroCarousel: View {
 
             LinearGradient(
                 stops: [
-                    .init(color: .clear, location: 0.30),
-                    .init(color: .black.opacity(0.30), location: 0.52),
-                    .init(color: .black.opacity(0.72), location: 0.72),
-                    .init(color: palette.background.opacity(0.97), location: 0.90),
+                    .init(color: .clear, location: 0.34),
+                    .init(color: .black.opacity(0.40), location: 0.62),
+                    .init(color: .black.opacity(0.78), location: 0.82),
                     .init(color: palette.background, location: 1),
                 ],
                 startPoint: .top,
@@ -124,9 +297,8 @@ struct HeroCarousel: View {
 
             LinearGradient(
                 stops: [
-                    .init(color: .black.opacity(0.78), location: 0),
-                    .init(color: .black.opacity(0.34), location: 0.34),
-                    .init(color: .clear, location: 0.66),
+                    .init(color: .black.opacity(0.55), location: 0),
+                    .init(color: .clear, location: 0.5),
                 ],
                 startPoint: .leading,
                 endPoint: .trailing
@@ -134,24 +306,60 @@ struct HeroCarousel: View {
         }
     }
 
+    @ViewBuilder
     private var content: some View {
+        titleContent
+    }
+
+    /// A collection's header: its logo, or its name set large, over the name
+    /// of the shelf it belongs to.
+    private func collectionContent(_ collection: CollectionHero) -> some View {
         VStack(alignment: .leading, spacing: metrics.lerp(10, 16)) {
-            typeBadge
+            Group {
+                if let logo = collection.logoURL {
+                    RemoteImage(url: logo, contentMode: .fit)
+                        .frame(
+                            maxWidth: metrics.heroLogoMaxWidth,
+                            maxHeight: metrics.heroLogoMaxHeight,
+                            alignment: .leading
+                        )
+                } else {
+                    Text(collection.title)
+                        .font(.system(size: metrics.heroTitleSize, weight: .black))
+                        .tracking(metrics.heroTitleSize * -0.022)
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.6)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overArtwork()
 
-            HeroTitleTreatment(hero: current, metrics: metrics)
-
-            Text("Now Streaming")
-                .font(.system(size: metrics.lerp(15, 27), weight: .bold))
-                .foregroundStyle(.white)
+            Text("COLLECTION  ·  \(collection.collectionTitle.uppercased())")
+                .font(.system(size: metrics.lerp(12, 19), weight: .semibold))
+                .tracking(metrics.lerp(0.8, 1.6))
+                .foregroundStyle(.white.opacity(0.78))
+                .lineLimit(1)
                 .overArtwork()
+        }
+        .frame(width: metrics.heroContentWidth, alignment: .leading)
+        .padding(.horizontal, metrics.pagePadding)
+        .padding(.bottom, metrics.lerp(24, 44))
+        .animation(.easeInOut(duration: 0.4), value: collection.id)
+    }
+
+    private var titleContent: some View {
+        VStack(alignment: .leading, spacing: metrics.lerp(10, 16)) {
+            HeroTitleTreatment(hero: current, metrics: metrics)
 
             HeroFacts(item: current.item, metrics: metrics)
 
             if let synopsis = current.item.description?.trimmed, !synopsis.isEmpty {
                 Text(synopsis)
                     .font(.system(size: metrics.lerp(14, 24), weight: .regular))
-                    .foregroundStyle(.white.opacity(0.78))
-                    .lineLimit(2)
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(3)
                     .lineSpacing(metrics.lerp(4, 7))
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -159,113 +367,56 @@ struct HeroCarousel: View {
             }
 
             controls
-                .padding(.top, metrics.lerp(4, 12))
         }
         .frame(width: metrics.heroContentWidth, alignment: .leading)
         .padding(.horizontal, metrics.pagePadding)
-        .padding(.bottom, metrics.lerp(30, 108))
-        .animation(.easeInOut(duration: 0.45), value: index)
+        // Clears the dots, and keeps the buttons inside the television's
+        // safe area.
+        .padding(.bottom, metrics.lerp(24, 44) + 28)
+        .animation(.easeInOut(duration: 0.4), value: current.id)
     }
 
-    /// The small light pill over the title treatment — what kind of thing this
-    /// is, before the logo says which one.
-    private var typeBadge: some View {
-        Text(HomeViewModel.typeLabel(current.item.type).uppercased())
-            .font(.system(size: metrics.lerp(11, 16), weight: .heavy))
-            .tracking(metrics.lerp(0.8, 1.4))
-            .foregroundStyle(.black)
-            .padding(.horizontal, metrics.lerp(9, 14))
-            .padding(.vertical, metrics.lerp(4, 7))
-            .background(Capsule().fill(.white))
-            .shadow(color: .black.opacity(0.5), radius: 10, y: 4)
-    }
-
-    /// One Play, and the rest kept deliberately quiet beside it. The row has
-    /// to read as a single call to action across a room, so the two secondary
-    /// controls carry their icon only and no label.
+    /// What the carousel's current title offers: its page, and the list.
+    /// Left on the first button and right on the last page the carousel.
     private var controls: some View {
-        HStack(spacing: metrics.lerp(10, 18)) {
+        HStack(spacing: 20) {
             Button {
-                Task { await preparePlay() }
+                onOpen(current)
             } label: {
-                Text(isPreparingPlay ? "Loading…" : "Play")
+                Label("Details", systemImage: "info.circle.fill")
             }
-            .buttonStyle(
-                NuvioButtonStyle(kind: .prominent, icon: "play.fill", compact: metrics.isCompact)
-            )
-            .disabled(isPreparingPlay)
-            .focused($focusedControl, equals: .play)
-
-            HeroIconButton(
-                systemImage: library.contains(current.item) ? "checkmark" : "plus",
-                label: library.contains(current.item) ? "In My List" : "Add to My List",
-                metrics: metrics
-            ) {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                    library.toggle(current.item, addonBaseURL: current.addonBaseURL)
-                }
-            }
-            .focused($focusedControl, equals: .myList)
-
-            HeroIconButton(
-                systemImage: "info.circle.fill",
-                label: "Details",
-                metrics: metrics
-            ) {
-                onSelect(current)
-            }
+            .buttonStyle(HeroButtonStyle())
             .focused($focusedControl, equals: .details)
+            .prefersDefaultFocus(true, in: focusSpace)
+            .onMoveCommand { if $0 == .left { step(-1) } }
 
-            if items.count > 1 {
-                HeroIconButton(
-                    systemImage: "forward.fill",
-                    label: "Next title",
-                    metrics: metrics
-                ) {
-                    advance()
+            Button {
+                library.toggle(current.item, addonBaseURL: current.addonBaseURL)
+            } label: {
+                if library.contains(current.item) {
+                    Label("In My List", systemImage: "checkmark")
+                } else {
+                    Label("My List", systemImage: "plus")
                 }
-                .focused($focusedControl, equals: .next)
             }
+            .buttonStyle(HeroButtonStyle())
+            .focused($focusedControl, equals: .list)
+            .onMoveCommand { if $0 == .right { step(1) } }
         }
+        .padding(.top, 8)
     }
 
-    // MARK: Play
-
-    /// Fetches the title's meta, then opens the source picker on it. A series
-    /// needs its season list to land on the episode step rather than asking
-    /// the addons for streams of the series itself; if the fetch fails, the
-    /// press falls back to opening the title's own page.
-    private func preparePlay() async {
-        guard !isPreparingPlay else { return }
-        let hero = current
-        isPreparingPlay = true
-        defer { isPreparingPlay = false }
-
-        let selection = MetaSelection(item: hero.item, addonBaseURL: hero.addonBaseURL)
-        let detail = try? await AddonClient().meta(
-            baseURL: hero.addonBaseURL,
-            type: hero.item.type,
-            id: hero.item.id
-        )
-
-        guard let detail else {
-            onSelect(hero)
-            return
+    private func step(_ by: Int) {
+        guard items.count > 1 else { return }
+        withAnimation(.easeInOut(duration: 0.5)) {
+            index = (index + by + items.count) % items.count
         }
-        playTarget = PlayTarget(selection: selection, detail: detail)
     }
 
     // MARK: Rotation
 
-    private func advance() {
-        withAnimation(.easeInOut(duration: 0.7)) {
-            index = (index + 1) % max(items.count, 1)
-        }
-    }
-
-    /// Rotates on a timer, but holds the current title for as long as the
-    /// viewer has one of its controls focused — nothing is worse than the
-    /// backdrop changing just as you press select.
+    /// Rotates on a timer and holds still while a trailer plays or a button
+    /// on the stage has focus.
     private func autoAdvance() async {
         guard items.count > 1 else { return }
         var held = 0
@@ -274,7 +425,7 @@ struct HeroCarousel: View {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
 
-            if focusedControl != nil {
+            if isTrailerPlaying || focusedControl != nil {
                 held = 0
                 continue
             }
@@ -282,7 +433,59 @@ struct HeroCarousel: View {
             held += 1
             if held >= Self.dwellSeconds {
                 held = 0
-                advance()
+                withAnimation(.easeInOut(duration: 0.7)) {
+                    index = (index + 1) % items.count
+                }
+            }
+        }
+    }
+}
+
+/// The hero's buttons: a quiet glass pill at rest, and a solid white one only
+/// while it holds focus, so exactly one of the pair ever reads as selected.
+private struct HeroButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        FocusReader { isFocused in
+            configuration.label
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundStyle(isFocused ? Color.black : Color.white)
+                .padding(.horizontal, 30)
+                .padding(.vertical, 16)
+                .background(
+                    Capsule().fill(isFocused ? Color.white : Color.white.opacity(0.2))
+                )
+                .scaleEffect(isFocused ? 1.08 : 1)
+                .opacity(configuration.isPressed ? 0.8 : 1)
+                .animation(.easeOut(duration: 0.15), value: isFocused)
+        }
+    }
+}
+
+/// A collection's header artwork: its still backdrop, with the author's
+/// animation over it once that has frames — otherwise the stage would blink
+/// to empty first.
+private struct CollectionBackdrop: View {
+    let collection: CollectionHero
+    let size: CGSize
+
+    @State private var animationReady = false
+
+    var body: some View {
+        ZStack {
+            KenBurnsImage(url: collection.backdropURL)
+
+            if let animation = collection.animatedURL {
+                AnimatedImage(
+                    url: animation,
+                    maxPixelSize: max(size.width, size.height),
+                    isPlaying: true,
+                    onReady: { ready in
+                        withAnimation(.easeOut(duration: 0.3)) { animationReady = ready }
+                    }
+                )
+                .frame(width: size.width, height: size.height)
+                .clipped()
+                .opacity(animationReady ? 1 : 0)
             }
         }
     }
@@ -409,90 +612,4 @@ private struct HeroFacts: View {
     }
 }
 
-/// A hero control that carries its icon only, so the row still reads as one
-/// Play button from across a room. It keeps a full accessibility label, since
-/// what a glyph means is not obvious to VoiceOver.
-private struct HeroIconButton: View {
-    let systemImage: String
-    let label: String
-    let metrics: LayoutMetrics
-    let action: () -> Void
-
-    private var diameter: CGFloat { metrics.lerp(38, 66) }
-
-    var body: some View {
-        Button(action: action) {
-            FocusReader { isFocused in
-                Image(systemName: systemImage)
-                    .font(.system(size: metrics.lerp(15, 25), weight: .semibold))
-                    .foregroundStyle(isFocused ? .black : .white)
-                    .frame(width: diameter, height: diameter)
-                    .background {
-                        Circle().fill(
-                            isFocused
-                                ? AnyShapeStyle(Color.white)
-                                : AnyShapeStyle(Color.white.opacity(0.16))
-                        )
-                    }
-                    .overlay {
-                        Circle().strokeBorder(.white.opacity(isFocused ? 0 : 0.24), lineWidth: 1)
-                    }
-                    .scaleEffect(isFocused ? 1.1 : 1)
-                    .shadow(color: .black.opacity(0.5), radius: isFocused ? 20 : 8, y: isFocused ? 8 : 4)
-                    .animation(.spring(response: 0.3, dampingFraction: 0.72), value: isFocused)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-    }
-}
-
-/// Carousel position, drawn as the widening pill every streaming app uses.
-private struct PageDots: View {
-    let count: Int
-    let index: Int
-
-    var body: some View {
-        HStack(spacing: 7) {
-            ForEach(0..<count, id: \.self) { position in
-                Capsule()
-                    .fill(.white.opacity(position == index ? 0.9 : 0.25))
-                    .frame(width: position == index ? 26 : 6, height: 6)
-            }
-        }
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: index)
-    }
-}
-
-/// Holds the hero's space while the first catalogs are still in flight.
-private struct HeroSkeleton: View {
-    let metrics: LayoutMetrics
-    let isLoading: Bool
-    let error: String?
-
-    var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            SkeletonBlock(cornerRadius: 0)
-                .opacity(isLoading ? 1 : 0.35)
-
-            VStack(alignment: .leading, spacing: 18) {
-                if let error, !isLoading {
-                    Text(error)
-                        .font(.system(size: metrics.lerp(16, 26), weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    SkeletonBlock(cornerRadius: 10)
-                        .frame(width: metrics.lerp(200, 460), height: metrics.lerp(30, 62))
-                    SkeletonBlock(cornerRadius: 8)
-                        .frame(width: metrics.lerp(260, 640), height: metrics.lerp(14, 24))
-                }
-            }
-            .frame(width: metrics.heroContentWidth, alignment: .leading)
-            .padding(.horizontal, metrics.pagePadding)
-            .padding(.bottom, metrics.lerp(26, 64))
-        }
-        .frame(height: metrics.heroHeight)
-    }
-}
 #endif

@@ -50,11 +50,12 @@ struct ProfileScreen: View {
                         switcher
                         myList
                         appearance
-                        // tvOS has no WebKit, so no trailer ever plays there
-                        // and the controls would promise something the TV
-                        // can't do.
+                        // tvOS has no WebKit, so YouTube never plays there;
+                        // its trailers are Trailerio's direct video files.
                         #if os(iOS) || os(macOS)
                         trailers
+                        #else
+                        tvTrailers
                         #endif
                         account
                         server
@@ -76,7 +77,7 @@ struct ProfileScreen: View {
                     }
                 }
             }
-            .navigationDestination(item: $selected) { DetailView(selection: $0) }
+            .navigationDestination(item: $selected) { TitleDetail(selection: $0) }
             .sheet(item: $destination) { destination in
                 Group {
                     switch destination {
@@ -335,6 +336,15 @@ struct ProfileScreen: View {
                     .foregroundStyle(.white)
                     .tint(theme.palette.accent)
 
+                #if os(macOS)
+                if tmdb.useTrailers {
+                    Toggle("Play a clip when hovering a poster", isOn: $tmdb.hoverPreviews)
+                        .font(.subheadline)
+                        .foregroundStyle(.white)
+                        .tint(theme.palette.accent)
+                }
+                #endif
+
                 if tmdb.useTrailers {
                     Text("Trailers come from your addons and play on YouTube.")
                         .font(.caption2)
@@ -373,6 +383,34 @@ struct ProfileScreen: View {
         }
     }
 
+    #endif
+
+    #if os(tvOS)
+    /// A Trailerio-style addon supplies direct trailer files, which is what a
+    /// TV can play. Focusing a poster starts one, muted, in the card.
+    private var tvTrailers: some View {
+        Section(title: "Trailers") {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("Play a trailer in the hero when a title is focused", isOn: $tmdb.focusPreviews)
+                    .tint(theme.palette.accent)
+
+                Toggle("Play trailer sound (Play/Pause mutes)", isOn: $tmdb.trailerSound)
+                    .tint(theme.palette.accent)
+
+                Toggle("Play IMAX trailers when available", isOn: $tmdb.preferIMAX)
+                    .tint(theme.palette.accent)
+
+                TextField("Trailer addon address", text: $tmdb.trailerioURL)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+
+                Text("A Trailerio-style addon supplies the trailer files. Leave it empty to turn trailers off on this TV.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.45))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
     #endif
 
     // MARK: Account

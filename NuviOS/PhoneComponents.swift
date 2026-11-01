@@ -65,6 +65,32 @@ enum Phone {
     static var posterRadius: CGFloat { (10 * scale).rounded() }
     static var posterSpacing: CGFloat { (10 * scale).rounded() }
     static var shelfSpacing: CGFloat { (26 * scale).rounded() }
+
+    /// Room inside a card's focus frame above and below its artwork. A card
+    /// that grows on focus is scrolled flush against the edge of the scroll
+    /// view; without this the growth is what gets sliced off.
+    static var focusSlack: CGFloat {
+        #if os(tvOS)
+        20
+        #else
+        0
+        #endif
+    }
+
+    /// Between a shelf's title and its cards.
+    static var shelfHeaderGap: CGFloat { 10 }
+
+    /// On the TV a row's title is set *inside* its cards' focus frames, in a
+    /// band each card keeps above its artwork, so it can never be scrolled out
+    /// of view: focus scrolls a row until a card's frame meets the edge of the
+    /// scroll view, and a title sitting above the frames went under the hero.
+    static var shelfHeaderBand: CGFloat {
+        #if os(tvOS)
+        56
+        #else
+        0
+        #endif
+    }
     /// Clears the floating glass tab bar so the last row stays reachable. The
     /// bar barely grows with the window, so neither does this. The Mac's
     /// destinations live in the tab bar across the top instead, so nothing
@@ -283,7 +309,17 @@ private struct ShelfSlotKey: EnvironmentKey {
     static let defaultValue: Int? = nil
 }
 
+private struct PlateShiftKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
 extension EnvironmentValues {
+    /// How far the open card's artwork is drawn to the left of its slot.
+    var plateShift: CGFloat {
+        get { self[PlateShiftKey.self] }
+        set { self[PlateShiftKey.self] = newValue }
+    }
+
     var shelfSlot: Int? {
         get { self[ShelfSlotKey.self] }
         set { self[ShelfSlotKey.self] = newValue }
@@ -307,29 +343,42 @@ extension View {
         slot: Int,
         metrics: RowMetrics? = nil
     ) -> some View {
-        let distance: CGFloat = {
-            guard let open = expansion.expandedSlot else { return 0 }
+        // The cards after the open one carry the width it spills over them.
+        // In a grid, only the open card's own row moves: the rows above and
+        // below are not in its way and must not lurch sideways.
+        let sameRow: Bool = {
+            guard let open = expansion.expandedSlot else { return false }
+            guard let metrics, metrics.columnsPerRow > 0 else { return true }
 
-            var shift: CGFloat = 0
-            if let metrics, metrics.columnsPerRow > 0 {
-                guard slot / metrics.columnsPerRow == open / metrics.columnsPerRow else { return 0 }
-                // Every card in the row gives up the same ground, so the cards
-                // keep their spacing and only the row's leading end runs off
-                // the edge.
-                shift -= metrics.leftShift(
-                    forSlotOpenAt: open,
-                    extraWidth: expansion.extraWidth
-                )
-            }
-            // On top of that, the cards after the open one carry the width it
-            // spills over them.
-            if slot > open { shift += expansion.extraWidth }
-
-            return shift
+            return slot / metrics.columnsPerRow == open / metrics.columnsPerRow
         }()
+
+        // Near the end of a grid row the open card needs room to its left too.
+        // The cards before it slide left to give it, the first running out of
+        // view; the open card's own slot never moves, because the slot is what
+        // the pointer answers to — sliding it carried it out from under a
+        // resting pointer, which closed the card, which slid the row back, which
+        // reopened it. Its artwork alone is drawn into the vacated ground.
+        let leftShift: CGFloat = {
+            guard sameRow, let open = expansion.expandedSlot,
+                  let metrics, metrics.columnsPerRow > 0 else { return 0 }
+
+            return metrics.leftShift(forSlotOpenAt: open, extraWidth: expansion.extraWidth)
+        }()
+
+        let distance: CGFloat = {
+            guard sameRow, let open = expansion.expandedSlot else { return 0 }
+
+            if slot < open { return -leftShift }
+            if slot > open { return expansion.extraWidth }
+            return 0
+        }()
+
+        let plateShift: CGFloat = expansion.expandedSlot == slot ? leftShift : 0
 
         return self
             .environment(\.shelfSlot, slot)
+            .environment(\.plateShift, plateShift)
             // An offset, not a resize: the row's layout, content size and
             // scroll position are untouched, so the only thing that ever moves
             // under the pointer is a card getting out of its way.
@@ -422,9 +471,12 @@ struct PosterCard: View {
     /// opens over whatever is beside it.
     @Environment(ShelfExpansion.self) private var shelfExpansion: ShelfExpansion?
     @Environment(\.shelfSlot) private var shelfSlot: Int?
+    @Environment(\.plateShift) private var plateShift: CGFloat
     /// Whether the pointer is over this card's place in the row, which is not
     /// the same question as whether the card is open.
     @State private var isPointerInside = false
+
+    @EnvironmentObject private var tmdb: TmdbSettings
 
     private var isRowScrolling: Bool { shelfExpansion?.isScrolling ?? false }
 
@@ -443,6 +495,12 @@ struct PosterCard: View {
     private static let backdropPreloadDelay: Double = 0.2
     #endif
 
+    #if os(tvOS)
+    @Environment(HeroFocus.self) private var heroFocus: HeroFocus?
+    #endif
+    @Environment(\.shelfBand) private var shelfBand
+    @Environment(\.shelfID) private var shelfID
+
     var body: some View {
         Button(action: action) {
             // The card reads its own focus so the television gets the frame
@@ -450,7 +508,7 @@ struct PosterCard: View {
             // keeps exactly the card it had.
             FocusReader { isFocused in
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .bottom, spacing: rank == nil ? 0 : -width * 0.34) {
+                    HStack(alignment: .bottom, spacing: rank == nil ? 0 : -width * 0.08) {
                         if let rank {
                             RankNumeral(rank: rank, height: height)
                         }
@@ -466,7 +524,18 @@ struct PosterCard: View {
 
                     caption(isFocused: isFocused)
                 }
+                #if os(tvOS)
+                // The hero above the shelves shows whatever is focused here,
+                // trailer included; the card itself stays a still poster.
+                .onChange(of: isFocused) { _, focused in
+                    if focused {
+                        heroFocus?.focus(HeroItem(item: item, addonBaseURL: addonBaseURL), row: shelfID)
+                    }
+                }
+                #endif
             }
+            .padding(.top, Phone.focusSlack + shelfBand)
+            .padding(.bottom, Phone.focusSlack)
         }
         .buttonStyle(.pressableCard)
         .accessibilityLabel(rank.map { "\(item.name), number \($0)" } ?? item.name)
@@ -557,7 +626,12 @@ struct PosterCard: View {
         Color.clear
             .frame(width: width, height: height)
             .contentShape(Rectangle())
-            .overlay(alignment: .leading) { artworkPlate.allowsHitTesting(false) }
+            .overlay(alignment: .leading) {
+                artworkPlate
+                    .offset(x: -plateShift)
+                    .animation(.easeInOut(duration: 0.42), value: plateShift)
+                    .allowsHitTesting(false)
+            }
             .onHover { hovering in
                 isPointerInside = hovering
                 // A row in motion answers to the scroll, not to the cards it
@@ -590,6 +664,7 @@ struct PosterCard: View {
         #endif
     }
 
+    #if os(macOS)
     /// Starts the wait that opens the card: the backdrop loads first, and the
     /// card turns over once the pointer has stayed long enough to mean it.
     private func beginOpening() {
@@ -624,6 +699,7 @@ struct PosterCard: View {
         isPreloadingBackdrop = false
         if let shelfSlot { shelfExpansion?.close(slot: shelfSlot) }
     }
+    #endif
 
     /// The artwork itself, at whatever width it is currently drawn.
     private var artworkPlate: some View {
@@ -631,6 +707,7 @@ struct PosterCard: View {
         .frame(width: artworkWidth, height: height)
         .clipShape(RoundedRectangle(cornerRadius: Phone.posterRadius, style: .continuous))
         #if os(macOS)
+        .overlay { hoverClip }
         .overlay { synopsis }
         #endif
         .overlay {
@@ -661,6 +738,28 @@ struct PosterCard: View {
     }
 
     #if os(macOS)
+    /// The muted clip over the opened card, when the viewer has asked for it.
+    /// Only the opened card ever has one, so a pointer crossing a shelf
+    /// never starts a video.
+    @ViewBuilder
+    private var hoverClip: some View {
+        if tmdb.hoverPreviews, tmdb.useTrailers {
+            TrailerClip(
+                item: item,
+                addonBaseURL: addonBaseURL,
+                isActive: isExpanded,
+                startDelay: 0.4
+            )
+            // Trailers are mastered with black bars baked into the 16:9
+            // frame (scope films especially), so filling the card isn't
+            // enough: blow the clip up and let the clip shape crop them off.
+            .scaleEffect(1.4)
+            .frame(width: landscapeWidth, height: height)
+            .clipShape(RoundedRectangle(cornerRadius: Phone.posterRadius, style: .continuous))
+            .allowsHitTesting(false)
+        }
+    }
+
     /// What the title is about, across the foot of the opened card.
     ///
     /// Only once the card is open: a poster is too narrow to hold a sentence,
@@ -779,7 +878,7 @@ private struct RankNumeral: View {
             .font(.system(size: height * 0.62, weight: .heavy, design: .rounded))
             // Sits at background level, the way a ranked row's numerals do
             // everywhere else: present, but never competing with the artwork.
-            .foregroundStyle(.white.opacity(0.18))
+            .foregroundStyle(.white.opacity(0.4))
             .fixedSize()
             .padding(.bottom, -height * 0.06)
             .accessibilityHidden(true)
@@ -806,9 +905,10 @@ struct Shelf<Item: Identifiable, Card: View>: View {
     #endif
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ShelfHeader(title: title, subtitle: subtitle, onSeeAll: onSeeAll)
-
+        ShelfRow(
+            id: "shelf|\(title)|\(subtitle ?? "")",
+            header: ShelfHeader(title: title, subtitle: subtitle, onSeeAll: onSeeAll)
+        ) {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: isRanked ? 2 : Phone.posterSpacing) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
@@ -837,6 +937,55 @@ struct Shelf<Item: Identifiable, Card: View>: View {
         }
     }
 
+}
+
+private struct ShelfIDKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+private struct ShelfBandKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    /// Which row a card is in, for scrolling that row into place on focus.
+    var shelfID: String? {
+        get { self[ShelfIDKey.self] }
+        set { self[ShelfIDKey.self] = newValue }
+    }
+
+    /// Room a card keeps above its artwork for its row's title. Zero outside a
+    /// shelf, where a card has no title over it.
+    var shelfBand: CGFloat {
+        get { self[ShelfBandKey.self] }
+        set { self[ShelfBandKey.self] = newValue }
+    }
+}
+
+/// A row's title and its scrolling cards. The cards carry
+/// `Phone.shelfHeaderBand` of top padding; on the TV the title is drawn over
+/// that band rather than stacked above the row.
+struct ShelfRow<Row: View>: View {
+    let id: String
+    let header: ShelfHeader
+    @ViewBuilder var row: () -> Row
+
+    var body: some View {
+        #if os(tvOS)
+        ZStack(alignment: .topLeading) {
+            row()
+                .environment(\.shelfBand, Phone.shelfHeaderBand)
+                .environment(\.shelfID, id)
+            header
+        }
+        .id(id)
+        #else
+        VStack(alignment: .leading, spacing: Phone.shelfHeaderGap) {
+            header
+            row()
+        }
+        #endif
+    }
 }
 
 struct ShelfHeader: View {

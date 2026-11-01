@@ -119,6 +119,9 @@ struct CinematicBackdrop: View {
     /// Off when the banner isn't on screen, so neither the drift nor the
     /// animation runs against a view nobody is looking at.
     var isActive: Bool = true
+    /// The folder's own hero video. It plays once over the still artwork and
+    /// then fades back to it, rather than looping behind the title.
+    var videoURL: URL? = nil
 
     @Environment(\.palette) private var palette
     @State private var drifted = false
@@ -132,6 +135,13 @@ struct CinematicBackdrop: View {
                 .frame(height: height)
                 .frame(maxWidth: .infinity)
                 .clipped()
+
+            if let videoURL {
+                HeroVideo(url: videoURL, isActive: isActive)
+                    .frame(height: height)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+            }
 
             // Down the frame: the artwork melts into the page.
             LinearGradient(
@@ -448,7 +458,8 @@ struct FolderScreen: View {
                     url: (open.folder.heroBackdropURL ?? open.backdropURL)
                         .flatMap(URL.init(string:)),
                     animated: open.folder.animatedCoverURL,
-                    height: bannerHeight
+                    height: bannerHeight,
+                    videoURL: open.folder.heroVideoURL.flatMap(URL.init(string:))
                 )
 
                 VStack(spacing: 10) {

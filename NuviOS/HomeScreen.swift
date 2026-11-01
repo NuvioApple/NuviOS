@@ -469,12 +469,25 @@ private struct CollectionBackdrop: View {
     let size: CGSize
 
     @State private var animationReady = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
             KenBurnsImage(url: collection.backdropURL)
 
-            if let animation = collection.animatedURL {
+            // The hero video plays once over the backdrop and then fades back
+            // to it. A folder that has one doesn't also loop its cover
+            // animation, which would put it back over the still afterwards.
+            if let video = collection.videoURL {
+                FocusTrailerPreview(
+                    directURL: video,
+                    isActive: scenePhase == .active,
+                    delay: .milliseconds(600)
+                )
+                .aspectRatio(16 / 9, contentMode: .fill)
+                .frame(width: size.width, height: size.height)
+                .clipped()
+            } else if let animation = collection.animatedURL {
                 AnimatedImage(
                     url: animation,
                     maxPixelSize: max(size.width, size.height),

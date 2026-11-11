@@ -448,6 +448,25 @@ struct Stream: Decodable, Identifiable, Equatable {
 
     var isPlayable: Bool { playbackURL != nil || needsResolve }
 
+    enum CacheState { case ready, notReady, unknown }
+
+    /// Whether a debrid host already holds the file, as the addon labels it.
+    /// The conventions are the community's, not a spec: ⚡ or a "+" tag
+    /// ("[RD+]") for ready; ⏳, "download" or "uncached" for not.
+    var cacheState: CacheState {
+        let text = [name, title, description].compactMap { $0 }.joined(separator: " ")
+        let lower = text.lowercased()
+        if text.contains("⏳") || lower.contains("uncached") || lower.contains("not cached")
+            || lower.contains("download]") || lower.contains("[rd download") {
+            return .notReady
+        }
+        if text.contains("⚡") || lower.contains("cached")
+            || text.range(of: #"\[[A-Z]{2,3}\+\]"#, options: .regularExpression) != nil {
+            return .ready
+        }
+        return .unknown
+    }
+
     /// The bold line of a row. Addons put the quality either in `name` or in
     /// the first line of `title`.
     var headline: String {
@@ -623,7 +642,8 @@ struct AddonClient {
         let response = try await get(CatalogResponse.self, url: Self.url(baseURL, path: suffix))
         // Addons occasionally repeat an item across pages of the same row.
         var seen = Set<String>()
-        return response.metas.filter { seen.insert($0.id).inserted }
+        let items = response.metas.filter { seen.insert($0.id).inserted }
+        return items
     }
 
     /// Queries one catalog. `search=` is the Stremio protocol's own filter, so

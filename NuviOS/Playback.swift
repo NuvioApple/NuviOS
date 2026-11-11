@@ -139,6 +139,8 @@ struct PlaybackRequest: Identifiable, Equatable {
     /// Identifies the title, not the stream, so a resume point survives
     /// picking a different source for the same episode next time.
     var resumeKey: String = ""
+    /// The viewer chose Restart: open at zero whatever resume point is stored.
+    var startsFromBeginning = false
     /// The runners-up, best first. A source that fails — on opening or an hour
     /// in — is replaced from here without the viewer being sent back to a list,
     /// which is the difference between a title that keeps playing and one that
@@ -153,6 +155,10 @@ struct PlaybackRequest: Identifiable, Equatable {
     /// address seconds old cannot have expired, so the player skips its
     /// pre-open link check and saves the viewer that round trip.
     var mintedAt: Date?
+    /// A movie the viewer chose to watch, which is what earns a pre-roll.
+    var isFeature = false
+    /// The title's genres, so the trailer reel can match them.
+    var genres: [String] = []
 
     /// Identity is the *first* source only. Failing over swaps the address
     /// inside the player; if it changed this id, the full-screen cover would be
@@ -228,7 +234,7 @@ extension View {
         modifier(MacPlayerHandoff(item: item))
         #else
         fullScreenCover(item: item) { request in
-            NuvioPlayerScreen(request: request)
+            PreRollPlayer(request: request)
         }
         #endif
     }
@@ -319,6 +325,8 @@ struct StreamPicker: View {
     let detail: MetaDetail?
     /// Preselected when the caller already knows the episode.
     var video: MetaVideo?
+    /// Set by Restart: the film opens at zero rather than the resume point.
+    var startsFromBeginning = false
 
     @EnvironmentObject private var addons: AddonScope
     @Environment(\.palette) private var palette
@@ -336,6 +344,11 @@ struct StreamPicker: View {
     /// True while a debrid service is being asked for a download link, which
     /// is a few seconds of network before the player can open.
     @State private var resolving = false
+    /// The stream is chosen; the first trailer is still downloading.
+    @State private var readyingTrailers = false
+    /// The source list is only shown when the viewer asks for it — or when
+    /// the automatic choice has nothing to offer. Otherwise the app picks.
+    @State private var manual = false
 
     private var item: MetaItem { selection.item }
     private var isSeries: Bool { !(detail?.seasons.isEmpty ?? true) }
@@ -374,10 +387,16 @@ struct StreamPicker: View {
                 }
             }
             .background(palette.background.ignoresSafeArea())
+            #if os(tvOS)
+            // The remote's Back leaves; a title and a Close only crowd the panel.
+            .navigationTitle(isSeries && activeVideo == nil ? "Episodes" : "")
+            #else
             .navigationTitle(isSeries && activeVideo == nil ? "Episodes" : "Play")
+            #endif
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
+            #if !os(tvOS)
             .toolbar {
                 // `.cancellationAction` is the leading Close on iOS and, on the
                 // Mac, a button that Escape also triggers.
@@ -385,13 +404,14 @@ struct StreamPicker: View {
                     Button("Close") { dismiss() }
                 }
             }
+            #endif
         }
         .preferredColorScheme(.dark)
         .overlay {
-            if resolving {
+            if resolving || (readyingTrailers && manual) {
                 VStack(spacing: 14) {
                     ProgressView()
-                    Text("Getting the download link…")
+                    Text(readyingTrailers ? "Getting trailers ready…" : "Getting the download link…")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.7))
                 }
@@ -405,6 +425,12 @@ struct StreamPicker: View {
             auto.cancel()
             auditioned = false
             loader.load(type: item.type, id: streamID, from: addons.baseURLs)
+            // The trailer reel is found while the sources are being tested,
+            // so it's ready the moment one wins.
+            if item.type == "movie", PreRollSettings.shared.isActive {
+                PreRollPrefetch.shared.start(resumeKey: resumeKey, title: title, genres: item.genres,
+                                              fromBeginning: startsFromBeginning)
+            }
         }
         .onChange(of: loader.state) { _, state in
             // The audition can only start once the candidates are in.
@@ -417,6 +443,21 @@ struct StreamPicker: View {
             }
         }
         .onDisappear { auto.cancel() }
+        .onChange(of: playback) { old, new in
+            // Backing out of the player leaves the title altogether; only
+            // "Back to sources" on a failed stream lands on the list.
+            guard old != nil, new == nil else { return }
+            if PlayerExit.wantsSources {
+                PlayerExit.wantsSources = false
+                manual = true
+            } else {
+                dismiss()
+            }
+        }
+        .onChange(of: externalError) { _, error in
+            // The automatic pick couldn't open; the list is the way forward.
+            if error != nil { manual = true }
+        }
         .platformPlayerCover(item: $playback)
         .alert(
             "Couldn't open that stream",
@@ -523,6 +564,70 @@ struct StreamPicker: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .loaded(let streams):
+            if !manual, auto.status != .noneUsable {
+                autoPanel
+            } else {
+                sourceList(streams)
+            }
+        }
+    }
+
+    /// What stands in for the list while the app chooses: one quiet panel
+    /// with a single way out, to the list, for the viewer who wants to pick.
+    private var autoPanel: some View {
+        VStack(spacing: 22) {
+            ProgressView()
+                .controlSize(.large)
+            VStack(spacing: 8) {
+                Text(title)
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.headline)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            Text(autoStatusText)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.6))
+                .lineLimit(1)
+                .contentTransition(.opacity)
+            Button {
+                auto.cancel()
+                manual = true
+            } label: {
+                #if os(tvOS)
+                Text("Choose stream manually")
+                #else
+                Label("Choose stream manually", systemImage: "list.bullet")
+                #endif
+            }
+            #if os(tvOS)
+            .buttonStyle(NuvioButtonStyle(kind: .glass, icon: "list.bullet", compact: true))
+            #else
+            .buttonStyle(.glass)
+            #endif
+            .padding(.top, 10)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var autoStatusText: String {
+        if readyingTrailers { return "Getting trailers ready…" }
+        return switch auto.status {
+        case .idle: "Finding the best stream…"
+        case .reaching(let done, let total): "Testing sources… \(done) of \(total)"
+        case .measuring: "Checking speed…"
+        case .chose(let stream): "Starting \(stream.name ?? "stream")…"
+        case .cancelled, .noneUsable: "Finding the best stream…"
+        }
+    }
+
+    @ViewBuilder
+    private func sourceList(_ streams: [Stream]) -> some View {
             List {
                 if auto.showsBanner {
                     Section { autoBanner }
@@ -550,7 +655,6 @@ struct StreamPicker: View {
                 }
             }
             .hidingListBackground()
-        }
     }
 
     /// What the audition is doing, in one row at the top of the list.
@@ -586,7 +690,7 @@ struct StreamPicker: View {
                     .foregroundStyle(.white.opacity(0.55))
             }
             Spacer(minLength: 0)
-            Button("Choose myself") { auto.cancel() }
+            Button("Choose myself") { auto.cancel(); manual = true }
                 .font(.caption.weight(.semibold))
         }
     }
@@ -608,7 +712,7 @@ struct StreamPicker: View {
             ordered = streams.filter(\.isPlayable)
         }
         return ordered
-            .filter { $0.id != chosen.id }
+            .filter { $0.id != chosen.id && $0.cacheState != .notReady }
             .compactMap { stream in
                 guard let url = stream.playbackURL else { return nil }
                 return PlaybackAlternate(url: url, headers: stream.behaviorHints.requestHeaders)
@@ -630,7 +734,7 @@ struct StreamPicker: View {
             resolving = false
             switch result {
             case .resolved(let url, _):
-                playback = request(for: stream, url: url, headers: [:], mintedAt: Date())
+                handOff(request(for: stream, url: url, headers: [:], mintedAt: Date()))
             case .missingKey:
                 externalError = "\(resolve.debridService?.displayName ?? "That service") isn't set up on this account."
             case .notCached:
@@ -653,6 +757,7 @@ struct StreamPicker: View {
             subtitle: subtitle,
             headers: headers,
             resumeKey: resumeKey,
+            startsFromBeginning: startsFromBeginning,
             alternates: alternates(excluding: stream),
             refresh: streamID.map { id in
                 StreamRefresh(
@@ -665,8 +770,22 @@ struct StreamPicker: View {
                     episode: activeVideo?.episode
                 )
             },
-            mintedAt: mintedAt
+            mintedAt: mintedAt,
+            isFeature: item.type == "movie",
+            genres: item.genres
         )
+    }
+
+    /// Opens the player, but only once the first trailer of the reel is on
+    /// disk: it downloads alongside the source testing, and the loading screen
+    /// waits for it so the tape never buffers.
+    private func handOff(_ next: PlaybackRequest) {
+        Task { @MainActor in
+            readyingTrailers = true
+            await PreRollPrefetch.shared.firstClipReady(for: next)
+            readyingTrailers = false
+            playback = next
+        }
     }
 
     private func play(_ stream: Stream) {
@@ -679,7 +798,7 @@ struct StreamPicker: View {
         }
 
         if let url = stream.playbackURL {
-            playback = request(for: stream, url: url, headers: stream.behaviorHints.requestHeaders)
+            handOff(request(for: stream, url: url, headers: stream.behaviorHints.requestHeaders))
             return
         }
 
@@ -827,4 +946,18 @@ private extension View {
         scrollContentBackground(.hidden)
         #endif
     }
+}
+
+/// One opening of the source list, carrying whether Restart asked for it.
+/// Handed to the sheet as its item so the choice can't arrive stale.
+struct StreamOpen: Identifiable {
+    let id = UUID()
+    let fromStart: Bool
+}
+
+/// Set by the player's "Back to sources" so the picker shows its list instead
+/// of closing with the player.
+@MainActor
+enum PlayerExit {
+    static var wantsSources = false
 }

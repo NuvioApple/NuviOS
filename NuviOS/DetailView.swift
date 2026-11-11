@@ -11,6 +11,10 @@ struct DetailView: View {
     let selection: MetaSelection
 
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var profiles: ProfileStore
+    /// Bumped when progress is cleared here, so Resume and Restart re-read it.
+    @State private var progressVersion = 0
     @EnvironmentObject private var tmdb: TmdbSettings
     @Environment(\.palette) private var palette
     @Environment(\.dismiss) private var dismiss
@@ -22,7 +26,7 @@ struct DetailView: View {
     @State private var isTrailerPlaying = false
     @State private var scrollProgress: Double = 0
     @State private var related: MetaSelection?
-    @State private var isPickingStream = false
+    @State private var pickingStream: StreamOpen?
     /// The episode the viewer tapped in the row, if any.
     @State private var playingVideo: MetaVideo?
     @State private var chosenSeason: Int?
@@ -90,8 +94,8 @@ struct DetailView: View {
         .navigationDestination(item: $related) { selection in
             DetailView(selection: selection)
         }
-        .sheet(isPresented: $isPickingStream) {
-            StreamPicker(selection: selection, detail: detail)
+        .sheet(item: $pickingStream) { open in
+            StreamPicker(selection: selection, detail: detail, startsFromBeginning: open.fromStart)
                 .platformSheetSizing()
         }
         .sheet(item: $playingVideo) { video in
@@ -323,15 +327,44 @@ struct DetailView: View {
             // page, is the way in, and a button that only opened a list of the
             // same episodes was a step for nothing.
             if !isSeries {
-                Button {
-                    isPickingStream = true
-                } label: {
-                    Label("Play", systemImage: "play.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
+                // A film part-watched says so: Resume picks up where it was
+                // left, Restart opens at the top. A bare Play there read as
+                // "starts over", and viewers went hunting for their place.
+                if let resumeAt = movieResumePoint {
+                    HStack(spacing: 12) {
+                        Button {
+                            pickingStream = StreamOpen(fromStart: false)
+                        } label: {
+                            Label("Resume from \(NuvioPlayerModel.timecode(resumeAt))", systemImage: "play.fill")
+                                .font(.headline)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.glass)
+
+                        Button {
+                            pickingStream = StreamOpen(fromStart: true)
+                        } label: {
+                            Label("Restart", systemImage: "arrow.counterclockwise")
+                                .font(.headline)
+                                .lineLimit(1)
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 10)
+                        }
+                        .buttonStyle(.glass)
+                    }
+                } else {
+                    Button {
+                        pickingStream = StreamOpen(fromStart: false)
+                    } label: {
+                        Label("Play", systemImage: "play.fill")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.glass)
                 }
-                .buttonStyle(.glass)
             }
 
             HStack(spacing: 34) {
@@ -344,6 +377,16 @@ struct DetailView: View {
                     }
                 }
 
+                // Takes the film off Continue Watching here and on the account.
+                if !isSeries, movieResumePoint != nil {
+                    DetailAction(title: "Clear Progress", systemImage: "xmark.circle") {
+                        let id = item.id
+                        PlaybackProgress.clear(contentID: id)
+                        withAnimation { progressVersion += 1 }
+                        Task { await ContinueWatchingLoader.remove(contentID: id, session: session, profile: profiles.current) }
+                    }
+                }
+
                 PlatformShareButton(text: shareText)
             }
         }
@@ -353,6 +396,15 @@ struct DetailView: View {
     }
 
     private var isSeries: Bool { detail?.seasons.isEmpty == false }
+
+    /// Where a part-watched film was left, keyed exactly as the player records
+    /// it. Nil for a film never started, or one barely begun.
+    private var movieResumePoint: Double? {
+        _ = progressVersion
+        guard let seconds = PlaybackProgress.position(for: "\(item.type)|\(item.id)"),
+              seconds > 5 else { return nil }
+        return seconds
+    }
 
     private var shareText: String {
         let name = detail?.name ?? item.name

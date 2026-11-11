@@ -124,7 +124,7 @@ struct SearchScreen: View {
     /// Adaptive rather than a fixed count, so a wider window fills with more
     /// columns of the shelves' own poster size instead of stretched ones.
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: Phone.posterWidth * 0.88), spacing: Phone.posterSpacing)]
+        [GridItem(.adaptive(minimum: Phone.posterWidth, maximum: Phone.posterWidth + Phone.posterSpacing), spacing: Phone.posterSpacing)]
     }
 
     var body: some View {
@@ -133,7 +133,11 @@ struct SearchScreen: View {
                 palette.background.ignoresSafeArea()
                 content(for: query.trimmed)
             }
+            #if !os(tvOS)
+            // On tvOS the tab bar already says where you are; the title only
+            // floated, faded, over the keyboard.
             .navigationTitle("Search")
+            #endif
             .scrollEdgeEffectStyle(.soft, for: .top)
             // `navigationBarDrawer` is an iOS placement. macOS puts the field
             // in the toolbar and tvOS gives search its own focusable keyboard
@@ -175,12 +179,14 @@ struct SearchScreen: View {
 
     private var results: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 18) {
+            LazyVGrid(columns: columns, spacing: Phone.posterSpacing * 1.5) {
                 ForEach(search.results) { result in
                     PosterCard(
                         item: result.item,
                         addonBaseURL: result.addonBaseURL,
-                        width: 104
+                        // The shelves' own size: a fixed phone width left the
+                        // TV's posters lost in cells sized for the real thing.
+                        width: Phone.posterWidth
                     ) {
                         selected = MetaSelection(
                             item: result.item,
@@ -197,10 +203,10 @@ struct SearchScreen: View {
 
     private func grid(placeholders count: Int) -> some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 18) {
+            LazyVGrid(columns: columns, spacing: Phone.posterSpacing * 1.5) {
                 ForEach(0..<count, id: \.self) { _ in
                     SkeletonBlock(cornerRadius: Phone.posterRadius)
-                        .frame(width: 104, height: 156)
+                        .frame(width: Phone.posterWidth, height: (Phone.posterWidth * 3 / 2).rounded())
                 }
             }
             .padding(.horizontal, Phone.pagePadding)
@@ -241,9 +247,10 @@ struct SearchScreen: View {
                                 }
                                 .font(.subheadline)
                                 .padding(.vertical, 6)
+                                .padding(.horizontal, 12)
                                 .contentShape(Rectangle())
                             }
-                            .buttonStyle(.pressable)
+                            .buttonStyle(RowHighlightStyle())
                         }
                     }
                     .padding(16)
@@ -265,4 +272,24 @@ struct SearchScreen: View {
         }
     }
 }
+/// A full-width row's focus: it lights up where it sits rather than growing,
+/// since a row as wide as its card can only grow out of the card.
+private struct RowHighlightStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        #if os(tvOS)
+        FocusReader { isFocused in
+            configuration.label
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(.white.opacity(isFocused ? 0.14 : 0))
+                )
+                .animation(.easeOut(duration: 0.15), value: isFocused)
+        }
+        #else
+        configuration.label
+            .opacity(configuration.isPressed ? 0.6 : 1)
+        #endif
+    }
+}
+
 #endif

@@ -41,6 +41,28 @@ struct BrowseScreen: View {
 
     private var hasBillboard: Bool { showsHero && !model.heroItems.isEmpty }
 
+    /// The "fixed hero" setting: a stage pinned above the shelves that shows
+    /// whatever poster has focus. TV only, and only on the browse tabs
+    /// (Movies, Series): Home keeps its carousel.
+    private var usesPinnedHero: Bool {
+        #if os(tvOS)
+        tmdb.pinnedHero && !showsHero
+        #else
+        false
+        #endif
+    }
+
+    #if os(tvOS)
+    /// What the pinned stage shows before any card has focus: the featured
+    /// titles, narrowed to this tab's type, or else the first row's titles.
+    private var pinnedFallback: [HeroItem] {
+        let featured = model.heroItems.filter { filter == nil || $0.item.type == filter }
+        if !featured.isEmpty { return featured }
+        guard let row = rows.first else { return [] }
+        return row.items.prefix(8).map { HeroItem(item: $0, addonBaseURL: row.addonBaseURL) }
+    }
+    #endif
+
     /// The TV hero is laid out in `LayoutMetrics`, which are derived from the
     /// space a screen actually has — the same measurement `Phone` reads.
     private var heroMetrics: LayoutMetrics {
@@ -120,7 +142,7 @@ struct BrowseScreen: View {
     /// a row rather than on a billboard.
     @ViewBuilder
     private var topBar: some View {
-        if !showsHero {
+        if !showsHero, !usesPinnedHero {
             FloatingTopBar(progress: 1) {
                 AnyView(
                     Text(title)
@@ -142,7 +164,17 @@ struct BrowseScreen: View {
         // scroll beneath it. Laid out by hand, edge to edge: the hero starts
         // at the top of the screen (its copy sits at the bottom, clear of the
         // tab bar) and the shelves run to the bottom edge.
-        shelves
+        Group {
+            if usesPinnedHero {
+                // The fixed hero: it never scrolls, the shelves move under it.
+                VStack(spacing: 0) {
+                    PinnedHero(items: pinnedFallback, metrics: heroMetrics)
+                    shelves
+                }
+            } else {
+                shelves
+            }
+        }
         .focusScope(focusSpace)
         .ignoresSafeArea(edges: [.top, .bottom])
         .environment(heroFocus)
@@ -192,7 +224,7 @@ struct BrowseScreen: View {
                         focusSpace: focusSpace
                     )
                     .id("hero")
-                } else {
+                } else if !usesPinnedHero {
                     // Clears the floating bar, which is opaque on these tabs.
                     Color.clear.frame(height: 40)
                 }
@@ -226,6 +258,12 @@ struct BrowseScreen: View {
                                 item: resume.item,
                                 addonBaseURL: resume.addonBaseURL
                             )
+                        }
+                        // Hold Select on the TV, long-press on a phone.
+                        .contextMenu {
+                            Button("Remove from Continue Watching", systemImage: "xmark.circle", role: .destructive) {
+                                model.removeFromContinueWatching(resume, session: session, profile: profiles.current)
+                            }
                         }
                     }
                 }
@@ -377,9 +415,9 @@ private struct Billboard: View {
     /// no labels to put in that row, so it came out as an empty capsule
     /// floating over the artwork — on top of the app's own dots, which already
     /// say the same thing. The Mac shows the current hero directly instead.
-    @ViewBuilder
+    /// The hero pager: one page at a time, crossfading, on the Mac and the
+    /// phone alike. A drag across the artwork pages it by hand.
     private var pages: some View {
-        #if os(macOS)
         ZStack {
             ForEach(Array(items.enumerated()), id: \.element.id) { offset, hero in
                 if offset == index {
@@ -389,14 +427,53 @@ private struct Billboard: View {
             }
         }
         .animation(.easeInOut(duration: 0.45), value: index)
-        #else
-        TabView(selection: $index) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { offset, hero in
-                page(offset: offset, hero: hero).tag(offset)
+        #if !os(tvOS)
+        .gesture(
+            DragGesture(minimumDistance: 20).onEnded { value in
+                if value.translation.width < -50 { step(1) } else if value.translation.width > 50 { step(-1) }
             }
-        }
-        .platformPagedTabViewStyle()
+        )
         #endif
+        #if os(macOS)
+        .onHover { isHovering = $0 }
+        .onAppear { watchSwipes() }
+        .onDisappear { stopWatchingSwipes() }
+        #endif
+    }
+
+    #if os(macOS)
+    /// A two-finger trackpad swipe arrives as horizontal scrolling, not a drag.
+    @State private var isHovering = false
+    @State private var swipeMonitor: Any?
+    @State private var swipeTravel: CGFloat = 0
+    @State private var swipeUsed = false
+
+    private func watchSwipes() {
+        guard swipeMonitor == nil else { return }
+        swipeMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            guard isHovering, event.hasPreciseScrollingDeltas else { return event }
+            if event.phase == .began { swipeTravel = 0; swipeUsed = false }
+            // Only a mostly sideways gesture pages; vertical scrolling still scrolls.
+            guard abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) else { return event }
+            swipeTravel += event.scrollingDeltaX
+            if !swipeUsed, abs(swipeTravel) > 60 {
+                swipeUsed = true
+                step(swipeTravel < 0 ? 1 : -1)
+            }
+            if event.phase == .ended || event.phase == .cancelled { swipeTravel = 0; swipeUsed = false }
+            return nil
+        }
+    }
+
+    private func stopWatchingSwipes() {
+        if let swipeMonitor { NSEvent.removeMonitor(swipeMonitor) }
+        swipeMonitor = nil
+    }
+    #endif
+
+    private func step(_ delta: Int) {
+        guard items.count > 1 else { return }
+        index = (index + delta + items.count) % items.count
     }
 
     private func page(offset: Int, hero: HeroItem) -> some View {
@@ -441,7 +518,9 @@ private struct Billboard: View {
         // remote has no drag to offer, and `DragGesture` doesn't exist there.
         #if !os(tvOS)
         .simultaneousGesture(
-            DragGesture(minimumDistance: 4).onChanged { _ in isInteracting = true }
+            DragGesture(minimumDistance: 4)
+                .onChanged { _ in isInteracting = true }
+                .onEnded { _ in isInteracting = false }
         )
         #endif
     }
@@ -656,16 +735,13 @@ private struct BillboardPage: View {
                     typeset
                 }
             }
-            .frame(maxWidth: Phone.billboardLogoWidth, maxHeight: Phone.billboardLogoHeight)
-            .background {
-                // Addons ship dark logos as often as white ones, and a dark one
-                // on a darkened backdrop is unreadable. A soft lift behind it
-                // rescues those without touching how a white logo looks.
-                Ellipse()
-                    .fill(.white.opacity(0.14))
-                    .blur(radius: 24)
-                    .padding(-12)
-            }
+            // Steps back while the trailer plays, so the picture carries the
+            // stage — WatchGuide's hero does the same.
+            .frame(
+                maxWidth: Phone.billboardLogoWidth * (isTrailerVisible ? 0.6 : 1),
+                maxHeight: Phone.billboardLogoHeight * (isTrailerVisible ? 0.6 : 1)
+            )
+            .animation(.easeInOut(duration: 0.5), value: isTrailerVisible)
         } else {
             typeset
         }

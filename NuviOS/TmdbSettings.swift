@@ -30,6 +30,7 @@ final class TmdbSettings: ObservableObject {
     private static let trailerioKey = "nuvio.trailerio.url"
     private static let focusPreviewsKey = "nuvio.trailerio.focusPreviews"
     private static let trailerSoundKey = "nuvio.trailerio.sound"
+    private static let pinnedHeroKey = "nuvio.tv.pinnedHero"
 
     private let defaults: UserDefaults
 
@@ -58,6 +59,14 @@ final class TmdbSettings: ObservableObject {
     /// card. Off for anyone who finds a moving shelf distracting.
     @Published var focusPreviews: Bool {
         didSet { defaults.set(focusPreviews, forKey: Self.focusPreviewsKey) }
+    }
+
+    /// The TV's "fixed hero": the stage stays pinned at the top of Movies
+    /// and Series (Home keeps its carousel) while the shelves scroll beneath it, and shows —
+    /// trailer and all — whichever poster has focus. Off keeps the rotating
+    /// carousel that scrolls away with the page.
+    @Published var pinnedHero: Bool {
+        didSet { defaults.set(pinnedHero, forKey: Self.pinnedHeroKey) }
     }
 
     /// Whether the hero's trailer plays with its sound. The remote's
@@ -100,6 +109,7 @@ final class TmdbSettings: ObservableObject {
         self.trailerioURL = defaults.string(forKey: Self.trailerioKey) ?? Self.defaultTrailerioURL
         self.focusPreviews = defaults.object(forKey: Self.focusPreviewsKey) as? Bool ?? true
         self.trailerSound = defaults.object(forKey: Self.trailerSoundKey) as? Bool ?? true
+        self.pinnedHero = defaults.object(forKey: Self.pinnedHeroKey) as? Bool ?? false
         self.preferIMAX = defaults.object(forKey: TrailerioPreferences.preferIMAXKey) as? Bool ?? true
     }
 }

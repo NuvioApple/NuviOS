@@ -442,7 +442,15 @@ final class StreamAutoSelector: ObservableObject {
         // first dozen rows are one dead release is exactly the list that used
         // to end in "none of these answered" while a working source sat at
         // number thirteen.
-        let candidates = Self.deduplicated(streams.filter(\.isPlayable))
+        // Only what the debrid host already has. An uncached link still
+        // "plays" — a few seconds of the host's own "downloading, try again
+        // soon" video — so it passes every probe and has to be excluded by
+        // what the addon says about it. Marked-ready sources first; unmarked
+        // ones only if nothing is marked; known-uncached ones never.
+        let playable = Self.deduplicated(streams.filter(\.isPlayable))
+        let ready = playable.filter { $0.cacheState == .ready }
+        let unknown = playable.filter { $0.cacheState == .unknown }
+        let candidates = (ready.isEmpty ? unknown : ready)
             .sorted { Self.claimScore($0) > Self.claimScore($1) }
         guard !candidates.isEmpty else {
             status = .noneUsable

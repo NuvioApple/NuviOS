@@ -60,6 +60,10 @@ final class HomeViewModel: ObservableObject {
 
     @Published private(set) var rows: [CatalogRow] = []
     @Published private(set) var heroItems: [HeroItem] = []
+    /// What the catalogs would put in the hero; only used while nothing on
+    /// Continue Watching qualifies.
+    private var catalogHeroItems: [HeroItem] = []
+    private var heroJob: Task<Void, Never>?
     @Published private(set) var isLoading = false
     @Published private(set) var loadError: String?
     /// Every searchable catalog the loaded addons advertise.
@@ -73,7 +77,9 @@ final class HomeViewModel: ObservableObject {
     /// What this account is part-way through, read from the same backend rows
     /// the TV app writes. Reloaded on its own clock: coming back from the
     /// player should move this shelf without refetching every catalog behind it.
-    @Published private(set) var continueWatching: [ContinueWatchingItem] = []
+    @Published private(set) var continueWatching: [ContinueWatchingItem] = [] {
+        didSet { rebuildHero() }
+    }
 
     /// The content types the loaded rows actually cover, in a stable order,
     /// so the filter bar only ever offers tabs that lead somewhere.
@@ -137,6 +143,15 @@ final class HomeViewModel: ObservableObject {
     func refreshContinueWatching(session: AppSession, profile: Profile) {
         guard !loadedAddonURLs.isEmpty else { return }
         loadContinueWatching(session: session, profile: profile, addonURLs: loadedAddonURLs)
+    }
+
+    /// Drops a card at once, then removes its progress everywhere.
+    func removeFromContinueWatching(_ resume: ContinueWatchingItem, session: AppSession, profile: Profile) {
+        continueWatching.removeAll { $0.progress.contentID == resume.progress.contentID }
+        Task {
+            await ContinueWatchingLoader.remove(contentID: resume.progress.contentID, session: session, profile: profile)
+            refreshContinueWatching(session: session, profile: profile)
+        }
     }
 
     private func loadContinueWatching(session: AppSession, profile: Profile, addonURLs: [String]) {
@@ -359,7 +374,8 @@ final class HomeViewModel: ObservableObject {
 
         rows.removeAll(where: \.isEmptyAfterLoading)
         if rows.isEmpty { loadError = "Your addons didn't return anything to show." }
-        heroItems = Self.pickHeroItems(from: rows)
+        catalogHeroItems = Self.pickHeroItems(from: rows)
+        rebuildHero()
     }
 }
 
@@ -368,6 +384,55 @@ extension HomeViewModel {
     /// a stretched poster behind the title treatment looks broken — and one
     /// title per row keeps the rotation varied rather than showing the top
     /// five of the same catalog.
+    /// The hero is built for the viewer: titles similar to what they're at
+    /// least halfway through on Continue Watching — never those titles
+    /// themselves. The catalogs only fill it when there's nothing to go on,
+    /// so Home is never left without one.
+    private func rebuildHero() {
+        let seeds = continueWatching.filter { resume in
+            let p = resume.progress
+            return p.durationSeconds > 0 && p.positionSeconds / p.durationSeconds >= 0.4
+        }
+        heroJob?.cancel()
+        guard !seeds.isEmpty else {
+            if heroItems != catalogHeroItems { heroItems = catalogHeroItems }
+            return
+        }
+        let watchingIDs = Set(continueWatching.map(\.progress.contentID))
+        let apiKey = TmdbSettings.shared.effectiveAPIKey
+        heroJob = Task { [weak self] in
+            var lists: [(String, [MetaItem])] = []
+            await withTaskGroup(of: (Int, String, [MetaItem]).self) { group in
+                for (i, seed) in seeds.prefix(5).enumerated() {
+                    group.addTask {
+                        let found = await UpcomingTitles.shared.similar(
+                            toIMDb: seed.progress.contentID, media: seed.progress.contentType, apiKey: apiKey)
+                        return (i, seed.addonBaseURL, found)
+                    }
+                }
+                var byIndex: [Int: (String, [MetaItem])] = [:]
+                for await (i, addon, found) in group { byIndex[i] = (addon, found) }
+                lists = byIndex.keys.sorted().compactMap { byIndex[$0] }
+            }
+            guard !Task.isCancelled, let self else { return }
+            // Round-robin, so each watched title gets a say before any gets two.
+            var seen = watchingIDs
+            var picked: [HeroItem] = []
+            var depth = 0
+            while picked.count < Self.maxHeroItems, depth < 6 {
+                for (addon, items) in lists where depth < items.count {
+                    let item = items[depth]
+                    guard seen.insert(item.id).inserted else { continue }
+                    picked.append(HeroItem(item: item, addonBaseURL: addon))
+                    if picked.count >= Self.maxHeroItems { break }
+                }
+                depth += 1
+            }
+            let next = picked.isEmpty ? self.catalogHeroItems : picked
+            if next != self.heroItems { self.heroItems = next }
+        }
+    }
+
     static func pickHeroItems(from rows: [CatalogRow]) -> [HeroItem] {
         var seen = Set<String>()
         var picked: [HeroItem] = []

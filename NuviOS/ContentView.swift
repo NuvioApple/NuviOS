@@ -49,7 +49,7 @@ struct ContentView: View {
         // owns the whole window, the way QuickTime and the TV app do.
         .overlay {
             if let request = player.request {
-                NuvioPlayerScreen(request: request)
+                PreRollPlayer(request: request)
                     .environmentObject(session)
                     .environment(\.platformCoverDismiss) { player.close() }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

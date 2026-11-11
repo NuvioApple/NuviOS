@@ -47,6 +47,9 @@ struct DirectTrailer: Equatable, Sendable {
 enum TrailerPurpose: Sendable {
     case preview
     case feature
+    /// The trailer tape: downloaded whole before it plays, so a light MP4
+    /// beats a studio master or an HLS ladder that can't be saved as one file.
+    case tape
 }
 
 // MARK: - Client
@@ -165,6 +168,25 @@ actor TrailerioClient {
                 if a.height != b.height { return a.height > b.height }
                 if a.isStarred != b.isStarred { return a.isStarred }
                 return lhs.offset < rhs.offset
+            }
+        case .tape:
+            func score(_ t: DirectTrailer) -> Int {
+                var value = 0
+                if !t.isHLS { value += 1000 }
+                let path = t.url.absoluteString.lowercased()
+                if !(path.contains("mezzanine") || path.contains("/source_")) { value += 200 }
+                switch t.height {
+                case 1080: value += 60
+                case 720: value += 40
+                case 2160: value += 20
+                default: value += 30
+                }
+                if t.isStarred { value += 10 }
+                return value
+            }
+            sorted = indexed.sorted { lhs, rhs in
+                let x = score(lhs.element), y = score(rhs.element)
+                return x != y ? x > y : lhs.offset < rhs.offset
             }
         case .preview:
             // A muted card preview: small, quick, and never the Atmos

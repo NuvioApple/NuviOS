@@ -162,6 +162,7 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
     }
     /// How long a source gets to produce a picture before its turn is over.
     private static let openTimeout: Double = 12
+    private static let resumeOpenTimeout: Double = 25
     /// The rate to go back to when a press-and-hold ends.
     private var rateBeforeBoost: Float = 1
     /// The last whole second the once-a-second work ran for.
@@ -302,6 +303,7 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
         // position into the open instead, so nothing is fetched that nobody
         // watches.
         let resumeTarget = pendingResumeTarget()
+        announceResumeWhenPlaying = nil
         if let resumeTarget {
             // The transport bar should read the resume point from the first
             // frame rather than counting up from zero to meet it.
@@ -387,7 +389,10 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
         print("[player] \(type(of: engine!).name) could not play this (\(reason)); retrying on \(VLCPlaybackEngine.name)")
 
         // Held across the swap: the position is the viewer's, not the engine's.
-        pendingResume = pendingResume ?? (currentTime > 1 ? currentTime : nil)
+        // A resume that never produced a picture still counts — the clock reads
+        // zero while an open is pending, which is how a slow resume restarted
+        // the film from the top.
+        pendingResume = pendingResume ?? announceResumeWhenPlaying ?? (currentTime > 1 ? currentTime : nil)
         hasAppliedTrackPreference = false
         didSeekToResumePoint = false
         phase = .opening
@@ -421,7 +426,7 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
 
         let next = alternates.removeFirst()
         // Taken before the engine is torn down, since stopping resets the clock.
-        let resumeAt = pendingResume ?? (currentTime > 1 ? currentTime : nil)
+        let resumeAt = pendingResume ?? announceResumeWhenPlaying ?? (currentTime > 1 ? currentTime : nil)
 
         print("[player] failing over (\(reason)); \(alternates.count) source(s) left")
 
@@ -524,7 +529,11 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
     private func startOpenWatchdog() {
         openWatchdog?.cancel()
         openWatchdog = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.openTimeout))
+            // Opening deep into a file costs a ranged read at a far offset,
+            // which a debrid host can take a good while to answer; a resume
+            // gets longer before it is written off.
+            let wait = self?.announceResumeWhenPlaying == nil ? Self.openTimeout : Self.resumeOpenTimeout
+            try? await Task.sleep(for: .seconds(wait))
             guard !Task.isCancelled, let self, self.phase == .opening else { return }
             let reason = "no picture in \(Int(Self.openTimeout))s"
             if self.fallBackToOtherEngine(reason: reason) { return }
@@ -803,7 +812,8 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
             announcesResume = false
             return handover
         }
-        guard let request, let stored = PlaybackProgress.position(for: request.resumeKey),
+        guard let request, !request.startsFromBeginning,
+              let stored = PlaybackProgress.position(for: request.resumeKey),
               stored > Self.minimumResumeSeconds else { return nil }
         announcesResume = true
         return stored
@@ -812,6 +822,9 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
     /// Whether the position being resumed to is one worth mentioning — a
     /// stored resume point is, a failover's handover is not.
     private var announcesResume = false
+
+    /// Anything shorter than this is a placeholder, not a title.
+    static let placeholderCeiling: Double = 60
 
     /// Below this, starting from the top is faster and no less correct.
     private static let minimumResumeSeconds: Double = 5
@@ -861,7 +874,8 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
             return
         }
 
-        guard let resume = PlaybackProgress.position(for: request.resumeKey), resume < duration else { return }
+        guard !request.startsFromBeginning,
+              let resume = PlaybackProgress.position(for: request.resumeKey), resume < duration else { return }
         seek(toSeconds: resume)
         announceResume(at: resume)
     }
@@ -872,7 +886,9 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
     }
 
     private func recordProgress(final: Bool = false) {
-        guard let request, let duration, duration > 0 else { return }
+        // A clip this short is a host's "not cached yet" placeholder, never
+        // the title itself; recording it would mark the film as finished.
+        guard let request, let duration, duration >= Self.placeholderCeiling else { return }
         PlaybackProgress.record(key: request.resumeKey, seconds: currentTime, duration: duration)
 
         // And outward, so the Continue Watching shelf — here and on every other
@@ -1038,6 +1054,16 @@ extension NuvioPlayerModel: PlaybackEngineDelegate {
 
     func engineDidEnd(_ engine: PlaybackEngine) {
         guard isCurrent(engine) else { return }
+        // A debrid host answers an uncached file with a few seconds of "try
+        // again soon" video. It opens and plays like a real source, so the
+        // auto-pick takes it — and its end is not the film's end. Treat it as
+        // a dead source: next one, from the real resume point.
+        if let duration, duration > 0, duration < Self.placeholderCeiling {
+            pendingResume = request.flatMap { PlaybackProgress.position(for: $0.resumeKey) }
+            if failOver(reason: "placeholder clip (\(Int(duration))s)") { return }
+            phase = .failed("This source isn't ready on its host yet. Try another one.")
+            return
+        }
         phase = .ended
         updateNowPlaying()
     }
@@ -1068,6 +1094,13 @@ extension NuvioPlayerModel: PlaybackEngineDelegate {
         guard isCurrent(engine) else { return }
 
         if duration == nil, let length = engine.duration {
+            // A debrid service that hasn't cached the file answers with a
+            // short "downloading to provider" clip instead of the film. A
+            // movie under two minutes is that placeholder: try the next source.
+            if request?.isFeature == true, length > 0, length < 120,
+               failOver(reason: "placeholder clip (\(Int(length))s)") {
+                return
+            }
             duration = length
             seekToResumePointIfNeeded()
         }
@@ -1088,6 +1121,10 @@ extension NuvioPlayerModel: PlaybackEngineDelegate {
         }
 
         guard !isScrubbing else { return }
+        // Until a resumed open shows its first picture the engine's clock still
+        // reads zero. Taking it would put the transport bar back at the start
+        // and, worse, record zero as the resume point.
+        if let target = announceResumeWhenPlaying, engine.currentTime < target - 10 { return }
         currentTime = engine.currentTime
 
         // Everything below is per-second work. `% 5` on its own was true for
@@ -1228,6 +1265,15 @@ struct NuvioPlayerScreen: View {
     /// fills a window that is rarely the size of the screen, and the skip
     /// gesture needs to know which half of *that* was tapped.
     @State private var size: CGSize = .zero
+    #if os(tvOS)
+    @Namespace private var playerFocus
+    private enum TVFocus: Hashable { case play, scrubber }
+    @FocusState private var tvFocus: TVFocus?
+    /// Presses in a row on the time bar, which is what makes each step longer.
+    @State private var scrubRun = 0
+    @State private var lastScrubPress = Date.distantPast
+    @State private var lastScrubForward = true
+    #endif
 
     var body: some View {
         let _ = PlayerMetrics.count("screenBody")
@@ -1289,6 +1335,22 @@ struct NuvioPlayerScreen: View {
                 if chromeVisible {
                     chrome.transition(.opacity)
                 }
+                #if os(tvOS)
+                if !chromeVisible {
+                    // With the chrome away nothing on screen could take focus,
+                    // and a screen with nothing focused gets no remote input at
+                    // all — so the controls could never be brought back. This
+                    // holds focus while they are hidden: a click brings them up,
+                    // and swipes reach the move handler on the root.
+                    Button { revealChrome(); focusPlay() } label: {
+                        Color.clear
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(HiddenChromeWakeStyle())
+                    .ignoresSafeArea()
+                }
+                #endif
 
                 if let notice = model.notice {
                     noticeBanner(notice)
@@ -1323,15 +1385,35 @@ struct NuvioPlayerScreen: View {
             }
         }
         #else
-        .onPlayPauseCommand { model.togglePlayPause() }
-        .onExitCommand { close() }
+        .onPlayPauseCommand {
+            // Mid-scrub, play/pause means "go there", as on the system player.
+            if scrubTarget != nil { commitTVScrub() } else { model.togglePlayPause() }
+        }
+        .onExitCommand {
+            // Back peels one layer at a time: a scrub preview, then the
+            // controls, and only a bare picture closes the film.
+            if scrubTarget != nil {
+                scrubTarget = nil
+                model.isScrubbing = false
+                tvFocus = .play
+            } else if chromeVisible {
+                hideTask?.cancel()
+                withAnimation(.easeInOut(duration: 0.25)) { chromeVisible = false }
+            } else {
+                close()
+            }
+        }
         .onMoveCommand { direction in
+            // With the controls up, left and right move between buttons; only
+            // a bare picture treats them as a skip.
+            guard !chromeVisible else { return }
             switch direction {
             case .left: skip(by: -NuvioPlayerModel.skipInterval)
             case .right: skip(by: NuvioPlayerModel.skipInterval)
             default: break
             }
             revealChrome()
+            if direction == .up { focusPlay() }
         }
         #endif
         .onAppear {
@@ -1426,7 +1508,10 @@ struct NuvioPlayerScreen: View {
             HStack(spacing: 14) {
                 Button("Try again") { model.retry() }
                     .buttonStyle(.glassProminent)
-                Button("Back to sources") { close() }
+                Button("Back to sources") {
+                    PlayerExit.wantsSources = true
+                    close()
+                }
                     .buttonStyle(.glass)
             }
             .font(.headline)
@@ -1458,7 +1543,175 @@ struct NuvioPlayerScreen: View {
     /// Laid out the way the system player is: the picture dims under a flat
     /// scrim, titles and the utility glyphs ride along the top, the transport
     /// sits dead centre, and the time bar runs across the bottom.
+    @ViewBuilder
     private var chrome: some View {
+        #if os(tvOS)
+        tvChrome
+        #else
+        standardChrome
+        #endif
+    }
+
+    #if os(tvOS)
+    /// The television's chrome, laid out the way the Apple TV player is: the
+    /// picture stays clear in the middle, everything sits in one band along the
+    /// bottom over a deep gradient, and the clock rides top-right. It goes
+    /// further than the system player in the places a sofa cares about: when
+    /// the film will end, the chapter you're in, and what the audio and
+    /// subtitles are set to, all readable without opening a menu.
+    private var tvChrome: some View {
+        ZStack {
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.55), location: 0),
+                    .init(color: .clear, location: 0.2),
+                    .init(color: .clear, location: 0.45),
+                    .init(color: .black.opacity(0.85), location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Spacer()
+                    clockLabel
+                }
+                .padding(.top, PlayerChrome.topInset)
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(request.title)
+                        .font(.system(size: 52, weight: .bold))
+                        .lineLimit(1)
+                    if let subtitle = model.currentChapterName ?? request.subtitle {
+                        Text(subtitle)
+                            .font(.title3)
+                            .foregroundStyle(.white.opacity(0.75))
+                            .lineLimit(1)
+                    }
+                }
+                .shadow(color: .black.opacity(0.5), radius: 10, y: 2)
+                .padding(.bottom, 28)
+
+                tvScrubber
+                    .padding(.bottom, 30)
+
+                tvControlRow
+            }
+            .padding(.horizontal, PlayerChrome.edgeInset)
+            .padding(.bottom, PlayerChrome.bottomInset)
+        }
+        .foregroundStyle(.white)
+    }
+
+    /// The time bar, reached by pressing up from the buttons. Left and right
+    /// move a preview point with no limit, each step longer the longer the
+    /// viewer keeps going; Select (or play/pause) jumps there, and leaving
+    /// the bar drops the preview.
+    private var tvScrubber: some View {
+        Button { commitTVScrub() } label: {
+            scrubber
+                .padding(.vertical, 12)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(HiddenChromeWakeStyle())
+        .focused($tvFocus, equals: .scrubber)
+        .onMoveCommand { direction in
+            switch direction {
+            case .left: stepTVScrub(forward: false)
+            case .right: stepTVScrub(forward: true)
+            default: break
+            }
+        }
+        .onChange(of: tvFocus) { _, focus in
+            if focus == .scrubber {
+                revealChrome(autoHide: false)
+            } else if scrubTarget != nil {
+                scrubTarget = nil
+                model.isScrubbing = false
+                scrubRun = 0
+                scheduleHide()
+            }
+        }
+    }
+
+    private func stepTVScrub(forward: Bool) {
+        guard let duration = model.duration, duration > 0, model.isSeekable else { return }
+        let now = Date()
+        if now.timeIntervalSince(lastScrubPress) < 0.8, forward == lastScrubForward {
+            scrubRun += 1
+        } else {
+            scrubRun = 0
+        }
+        lastScrubPress = now
+        lastScrubForward = forward
+
+        let step: Double = switch scrubRun {
+        case ..<3: 10
+        case ..<8: 30
+        case ..<14: 60
+        default: 120
+        }
+        let from = scrubTarget ?? model.currentTime
+        model.isScrubbing = true
+        scrubTarget = max(0, min(duration, from + (forward ? step : -step)))
+        revealChrome(autoHide: false)
+    }
+
+    private func commitTVScrub() {
+        guard let target = scrubTarget else { return }
+        model.seek(toSeconds: target)
+        scrubTarget = nil
+        model.isScrubbing = false
+        scrubRun = 0
+        if !model.isPlaying { model.togglePlayPause() }
+        scheduleHide()
+    }
+
+    /// Lands focus on play/pause once the chrome has been drawn.
+    private func focusPlay() {
+        DispatchQueue.main.async { tvFocus = .play }
+    }
+
+    /// One row of labelled glass pills. Play/pause leads, so it is where focus
+    /// lands and a click of the remote does what the viewer expects.
+    private var tvControlRow: some View {
+        GlassEffectContainer(spacing: 18) {
+            HStack(spacing: 18) {
+                Button {
+                    model.togglePlayPause()
+                    scheduleHide()
+                } label: {
+                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .frame(width: 50, height: 50)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
+                .prefersDefaultFocus(true, in: playerFocus)
+                .focused($tvFocus, equals: .play)
+
+                chapterMenu
+                subtitleMenu
+                audioMenu
+                speedMenu
+                fitMenu
+
+                // No Close: the remote's Back leaves the film.
+                Spacer(minLength: 0)
+            }
+        }
+        .focusScope(playerFocus)
+    }
+    #endif
+
+    private var standardChrome: some View {
         ZStack {
             // Clear glass carries no opacity of its own, so the legibility has
             // to come from the content behind it — which is exactly the trade
@@ -1531,6 +1784,9 @@ struct NuvioPlayerScreen: View {
             }
 
             #if os(tvOS)
+            clockLabel
+                .padding(.horizontal, 6)
+
             // Deliberately outside the group: close is the one control that is
             // not a playback setting, and Apple separates it for that reason.
             RoundIcon("xmark", label: "Close") { close() }
@@ -1614,7 +1870,7 @@ struct NuvioPlayerScreen: View {
                 TimeBar(
                     position: min(position, duration),
                     duration: duration,
-                    isScrubbing: scrubTarget != nil || model.isScrubbing,
+                    isScrubbing: scrubTarget != nil || model.isScrubbing || scrubberFocused,
                     chapterOffsets: model.chapters.map(\.startSeconds),
                     onScrub: { target in
                         model.isScrubbing = true
@@ -1637,6 +1893,10 @@ struct NuvioPlayerScreen: View {
                             .fontWeight(.semibold)
                         Spacer(minLength: 0)
                     }
+                    // When it finishes, in wall-clock time — the question a
+                    // viewer on the sofa is actually asking of the remaining time.
+                    endsAtLabel(remaining: max(0, duration - position))
+                    Spacer(minLength: 0)
                     Text("-" + NuvioPlayerModel.timecode(max(0, duration - position)))
                 }
                 .font(PlayerChrome.timecodeFont)
@@ -1670,6 +1930,29 @@ struct NuvioPlayerScreen: View {
             }
         }
     }
+
+    /// "Ends at 10:42 PM", ticking with the clock and allowing for the rate.
+    private func endsAtLabel(remaining: Double) -> some View {
+        TimelineView(.everyMinute) { context in
+            let rate = model.rate > 0 ? Double(model.rate) : 1
+            let end = context.date.addingTimeInterval(remaining / rate)
+            Text("Ends at \(end.formatted(date: .omitted, time: .shortened))")
+                .foregroundStyle(.white.opacity(0.6))
+        }
+    }
+
+    #if os(tvOS)
+    /// The time of day, top right — the system player shows it, and on a TV
+    /// there is no status bar to look at instead.
+    private var clockLabel: some View {
+        TimelineView(.everyMinute) { context in
+            Text(context.date.formatted(date: .omitted, time: .shortened))
+                .font(PlayerChrome.timecodeFont.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                .shadow(color: .black.opacity(0.45), radius: 6, y: 1)
+        }
+    }
+    #endif
 
     // MARK: Menus
 
@@ -1728,7 +2011,7 @@ struct NuvioPlayerScreen: View {
                     }
                 }
             } label: {
-                RoundIconLabel("list.bullet")
+                menuLabel("list.bullet", title: "Chapters", value: model.chapterIndex >= 0 ? "\(model.chapterIndex + 1) of \(model.chapters.count)" : nil)
             }
             .playerMenuChrome()
             .accessibilityLabel("Chapters")
@@ -1760,7 +2043,7 @@ struct NuvioPlayerScreen: View {
                     )
                 }
             } label: {
-                RoundIconLabel("waveform")
+                menuLabel("waveform", title: "Audio", value: model.audioTracks.first(where: \.isSelected)?.trackName)
             }
             .playerMenuChrome()
             .accessibilityLabel("Audio track")
@@ -1809,11 +2092,24 @@ struct NuvioPlayerScreen: View {
                     }
                 }
             } label: {
-                RoundIconLabel("captions.bubble")
+                menuLabel("captions.bubble", title: "Subtitles", value: model.textTracks.first(where: \.isSelected)?.trackName ?? "Off")
             }
             .playerMenuChrome()
             .accessibilityLabel("Subtitles")
         }
+    }
+
+    /// A menu's label: a round glyph on the phone and the Mac, a labelled pill
+    /// that also says what is chosen on the television.
+    @ViewBuilder
+    private func menuLabel(_ symbol: String, title: String, value: String? = nil) -> some View {
+        #if os(tvOS)
+        // No glass of its own: on tvOS the menu draws its own platter, and
+        // glass inside it reads as a capsule within a capsule.
+        PillLabel(symbol, title: title, value: value, carriesGlass: false)
+        #else
+        RoundIconLabel(symbol)
+        #endif
     }
 
     /// A menu can't hold a slider, so alignment is nudged in steps — the same
@@ -1845,7 +2141,7 @@ struct NuvioPlayerScreen: View {
                 }
             }
         } label: {
-            RoundIconLabel("speedometer")
+            menuLabel("speedometer", title: model.rate == 1 ? "Speed" : "\(String(format: "%g", model.rate))×")
         }
         .playerMenuChrome()
         .accessibilityLabel("Playback speed")
@@ -1862,7 +2158,7 @@ struct NuvioPlayerScreen: View {
                 }
             }
         } label: {
-            RoundIconLabel(model.fit.symbol)
+            menuLabel(model.fit.symbol, title: model.fit.rawValue)
         } primaryAction: {
             // A click toggles fit and fill as AVPlayer's zoom glyph does;
             // holding it opens the full list.
@@ -1986,6 +2282,14 @@ struct NuvioPlayerScreen: View {
         }
     }
 
+    private var scrubberFocused: Bool {
+        #if os(tvOS)
+        tvFocus == .scrubber
+        #else
+        false
+        #endif
+    }
+
     private func toggleChrome() {
         withAnimation(.easeInOut(duration: 0.2)) { chromeVisible.toggle() }
         if chromeVisible {
@@ -2023,6 +2327,13 @@ struct NuvioPlayerScreen: View {
 
 // MARK: - Pieces
 
+#if os(tvOS)
+/// No lift, no highlight: the wake target is invisible by design.
+private struct HiddenChromeWakeStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { configuration.label }
+}
+#endif
+
 /// The metrics the chrome is drawn to, kept in one place because the phone and
 /// the television want the same design at very different sizes.
 private enum PlayerChrome {
@@ -2043,8 +2354,8 @@ private enum PlayerChrome {
     static let volumeBarWidth: CGFloat = 160
     static let badgePadding: CGFloat = 34
     static let noticeLiftedInset: CGFloat = 260
-    static let titleFont: Font = .title3.weight(.semibold)
-    static let subtitleFont: Font = .callout
+    static let titleFont: Font = .title2.weight(.bold)
+    static let subtitleFont: Font = .headline.weight(.regular)
     static let timecodeFont: Font = .callout.monospacedDigit()
     static let captionFont: Font = .callout
     #elseif os(macOS)
@@ -2333,3 +2644,44 @@ private struct RoundIconLabel: View {
         }
     }
 }
+
+#if os(tvOS)
+/// A glass capsule with a glyph, a name and — when there is one — the current
+/// choice, dimmed after a dot. The Apple TV player hides its choices behind
+/// tabs; here they are on the button.
+private struct PillLabel: View {
+    let systemName: String
+    let title: String
+    var value: String?
+    var carriesGlass = true
+
+    init(_ systemName: String, title: String, value: String? = nil, carriesGlass: Bool = true) {
+        self.systemName = systemName
+        self.title = title
+        self.value = value
+        self.carriesGlass = carriesGlass
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemName)
+                .font(.system(size: 24, weight: .semibold))
+            Text(title)
+                .fontWeight(.semibold)
+            if let value, !value.isEmpty {
+                Text("·").foregroundStyle(.white.opacity(0.5))
+                Text(value.count > 18 ? String(value.prefix(17)) + "…" : value)
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+        }
+        .font(.callout)
+        .lineLimit(1)
+        // The menu would otherwise squeeze the label to "… · …".
+        .fixedSize()
+        .foregroundStyle(.white)
+        .padding(.horizontal, 26)
+        .padding(.vertical, 16)
+        .glassEffect(carriesGlass ? Glass.clear.interactive() : .identity, in: .capsule)
+    }
+}
+#endif

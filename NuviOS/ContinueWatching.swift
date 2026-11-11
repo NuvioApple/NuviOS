@@ -103,6 +103,27 @@ enum ContinueWatchingLoader {
         )
     }
 
+    /// Takes a title off the shelf for this profile: every resume point on this
+    /// device, and every row the account holds for it, episodes included.
+    static func remove(contentID: String, session: AppSession, profile: Profile) async {
+        PlaybackProgress.clear(contentID: contentID)
+        guard case .signedIn = session.state,
+              let configuration = await session.configuration,
+              let token = await session.validAccessToken() else { return }
+        let rows = (try? await WatchProgressDirectory.inProgress(
+            configuration: configuration, accessToken: token, profileID: profile.index
+        )) ?? []
+        var keys = [contentID]
+        for row in rows where row.contentID == contentID {
+            if let season = row.season, let episode = row.episode {
+                keys.append("\(contentID)_s\(season)e\(episode)")
+            }
+        }
+        await WatchProgressDirectory.delete(
+            keys: keys, configuration: configuration, accessToken: token, profileID: profile.index
+        )
+    }
+
     /// This device's own resume points, in the same shape as the account's.
     private static func localEntries() -> [WatchProgressEntry] {
         PlaybackProgress.inProgress().compactMap { key, entry in

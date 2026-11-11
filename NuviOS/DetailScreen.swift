@@ -21,12 +21,16 @@ struct MetaDetailView: View {
     @Environment(\.palette) private var palette
     @EnvironmentObject private var tmdb: TmdbSettings
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var session: AppSession
+    @EnvironmentObject private var profiles: ProfileStore
+    /// Bumped when progress is cleared here, so the resume buttons re-read it.
+    @State private var progressVersion = 0
 
     let selection: MetaSelection
 
     @State private var detail: MetaDetail?
     @State private var failed = false
-    @State private var isPickingStream = false
+    @State private var pickingStream: StreamOpen?
     /// The episode the viewer picked from the inline list, if any.
     @State private var playingVideo: MetaVideo?
     @State private var chosenSeason: Int?
@@ -87,8 +91,8 @@ struct MetaDetailView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .platformFullScreenCover(isPresented: $isPickingStream) {
-            StreamPicker(selection: selection, detail: detail)
+        .platformFullScreenCover(item: $pickingStream) { open in
+            StreamPicker(selection: selection, detail: detail, startsFromBeginning: open.fromStart)
         }
         .platformFullScreenCover(item: $playingVideo) { video in
             StreamPicker(selection: selection, detail: detail, video: video)
@@ -159,11 +163,40 @@ struct MetaDetailView: View {
         RemoteImage(url: backdropURL) {
             AnyView(Color.white.opacity(0.04))
         }
+        #if os(tvOS)
+        // The whole screen, at the artwork's own 16:9: a shorter band crops a
+        // 16:9 still top and bottom, which is where the faces are.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #else
         .frame(height: metrics.detailBackdropHeight)
         .frame(maxWidth: .infinity)
+        #endif
         .clipped()
         .overlay {
             ZStack {
+                #if os(tvOS)
+                // Light at the top so the picture reads; dark only where the
+                // copy sits, bottom-left.
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.2), location: 0),
+                        .init(color: .clear, location: 0.18),
+                        .init(color: .clear, location: 0.42),
+                        .init(color: palette.background.opacity(0.8), location: 0.78),
+                        .init(color: palette.background, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                LinearGradient(
+                    stops: [
+                        .init(color: palette.background.opacity(0.7), location: 0),
+                        .init(color: .clear, location: 0.55),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                #else
                 LinearGradient(
                     stops: [
                         .init(color: .black.opacity(0.5), location: 0),
@@ -179,6 +212,7 @@ struct MetaDetailView: View {
                     startPoint: .leading,
                     endPoint: .trailing
                 )
+                #endif
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -255,12 +289,34 @@ struct MetaDetailView: View {
                     if let first = firstEpisode {
                         playingVideo = first
                     } else {
-                        isPickingStream = true
+                        pickingStream = StreamOpen(fromStart: false)
                     }
                 }
                 .buttonStyle(
                     NuvioButtonStyle(kind: .prominent, icon: "play.fill", compact: metrics.isCompact)
                 )
+
+                // A part-watched film says so, and offers the top as well: a
+                // bare Play read as "starts over".
+                if movieResumePoint != nil {
+                    Button("Restart") {
+                        pickingStream = StreamOpen(fromStart: true)
+                    }
+                    .buttonStyle(
+                        NuvioButtonStyle(kind: .glass, icon: "arrow.counterclockwise", compact: metrics.isCompact)
+                    )
+
+                    // Takes the film off Continue Watching here and on the account.
+                    Button("Clear Progress") {
+                        let id = item.id
+                        PlaybackProgress.clear(contentID: id)
+                        progressVersion += 1
+                        Task { await ContinueWatchingLoader.remove(contentID: id, session: session, profile: profiles.current) }
+                    }
+                    .buttonStyle(
+                        NuvioButtonStyle(kind: .glass, icon: "xmark.circle", compact: metrics.isCompact)
+                    )
+                }
 
                 #if os(tvOS)
                 if hasTrailer {
@@ -287,10 +343,13 @@ struct MetaDetailView: View {
                     )
                 )
 
+                #if !os(tvOS)
+                // The remote's Back button already does this on a TV.
                 Button("Back to browsing") { dismiss() }
                     .buttonStyle(
                         NuvioButtonStyle(kind: .glass, icon: "chevron.left", compact: metrics.isCompact)
                     )
+                #endif
             }
         }
     }
@@ -341,8 +400,19 @@ struct MetaDetailView: View {
     }
 
     private var playLabel: String {
-        guard let code = firstEpisode?.code else { return "Play" }
-        return "Play \(code)"
+        if let code = firstEpisode?.code { return "Play \(code)" }
+        if let resumeAt = movieResumePoint {
+            return "Resume from \(NuvioPlayerModel.timecode(resumeAt))"
+        }
+        return "Play"
+    }
+
+    /// Where a part-watched film was left, keyed exactly as the player
+    /// records it. Nil for a series, a film never started, or one finished.
+    private var movieResumePoint: Double? {
+        _ = progressVersion
+        guard firstEpisode == nil else { return nil }
+        return PlaybackProgress.position(for: "\(item.type)|\(item.id)")
     }
 
     // MARK: Episodes

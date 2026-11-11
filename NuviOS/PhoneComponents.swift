@@ -169,6 +169,10 @@ enum Phone {
 /// a row has little room after it and would be cut off at the edge, so there the
 /// cards before it give up room too and the whole run slides left — the open
 /// card is always shown whole, whichever end of the row it sits at.
+enum ShelfViewport {
+    static let space = "shelfViewport"
+}
+
 @MainActor
 @Observable
 final class ShelfExpansion {
@@ -184,10 +188,14 @@ final class ShelfExpansion {
     /// How much wider the open card is than the slot it sits in — exactly the
     /// distance the cards after it have to stand aside.
     var extraWidth: CGFloat = 0
+    /// In a scrolling shelf: how far the cards before the open one slide left
+    /// so a card near the visible right edge opens on screen.
+    var leftShift: CGFloat = 0
 
-    func open(slot: Int, extraWidth: CGFloat) {
+    func open(slot: Int, extraWidth: CGFloat, leftShift: CGFloat = 0) {
         expandedSlot = slot
         self.extraWidth = extraWidth
+        self.leftShift = leftShift
     }
 
     func close(slot: Int) {
@@ -313,11 +321,22 @@ private struct PlateShiftKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
 
+private struct ShelfViewportWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
 extension EnvironmentValues {
     /// How far the open card's artwork is drawn to the left of its slot.
     var plateShift: CGFloat {
         get { self[PlateShiftKey.self] }
         set { self[PlateShiftKey.self] = newValue }
+    }
+
+    /// The visible width of the scrolling shelf a card is in, so a card near
+    /// its right edge can ask the cards before it to make room.
+    var shelfViewportWidth: CGFloat? {
+        get { self[ShelfViewportWidthKey.self] }
+        set { self[ShelfViewportWidthKey.self] = newValue }
     }
 
     var shelfSlot: Int? {
@@ -360,8 +379,8 @@ extension View {
         // resting pointer, which closed the card, which slid the row back, which
         // reopened it. Its artwork alone is drawn into the vacated ground.
         let leftShift: CGFloat = {
-            guard sameRow, let open = expansion.expandedSlot,
-                  let metrics, metrics.columnsPerRow > 0 else { return 0 }
+            guard sameRow, let open = expansion.expandedSlot else { return 0 }
+            guard let metrics, metrics.columnsPerRow > 0 else { return expansion.leftShift }
 
             return metrics.leftShift(forSlotOpenAt: open, extraWidth: expansion.extraWidth)
         }()
@@ -475,6 +494,9 @@ struct PosterCard: View {
     /// Whether the pointer is over this card's place in the row, which is not
     /// the same question as whether the card is open.
     @State private var isPointerInside = false
+    @Environment(\.shelfViewportWidth) private var shelfViewportWidth: CGFloat?
+    /// The slot's leading edge within the visible shelf.
+    @State private var slotMinX: CGFloat = 0
 
     @EnvironmentObject private var tmdb: TmdbSettings
 
@@ -626,6 +648,9 @@ struct PosterCard: View {
         Color.clear
             .frame(width: width, height: height)
             .contentShape(Rectangle())
+            .onGeometryChange(for: CGFloat.self) {
+                $0.frame(in: .named(ShelfViewport.space)).minX
+            } action: { slotMinX = $0 }
             .overlay(alignment: .leading) {
                 artworkPlate
                     .offset(x: -plateShift)
@@ -685,7 +710,19 @@ struct PosterCard: View {
             // Ask the cards after this one to stand aside by exactly the width
             // this one is about to spill over them.
             if let shelfSlot {
-                shelfExpansion?.open(slot: shelfSlot, extraWidth: landscapeWidth - width)
+                var shift: CGFloat = 0
+                if let viewport = shelfViewportWidth {
+                    // Keep the widened card inside the visible shelf: pull the
+                    // cards before it left by however much it would overflow,
+                    // but never past the shelf's leading edge.
+                    let overflow = slotMinX + landscapeWidth - (viewport - Phone.pagePadding)
+                    shift = max(min(overflow, slotMinX - Phone.pagePadding), 0)
+                }
+                shelfExpansion?.open(
+                    slot: shelfSlot,
+                    extraWidth: landscapeWidth - width,
+                    leftShift: shift
+                )
             }
         }
     }
@@ -902,6 +939,7 @@ struct Shelf<Item: Identifiable, Card: View>: View {
     /// Which card in *this* shelf is open, and how much room it needs. One per
     /// shelf, so opening a card in one row never moves another row.
     @State private var expansion = ShelfExpansion()
+    @State private var viewportWidth: CGFloat = 0
     #endif
 
     var body: some View {
@@ -930,6 +968,9 @@ struct Shelf<Item: Identifiable, Card: View>: View {
             .scrollTargetBehavior(.viewAligned)
             .scrollClipDisabled()
             #if os(macOS)
+            .coordinateSpace(name: ShelfViewport.space)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
+            .environment(\.shelfViewportWidth, viewportWidth)
             .onScrollPhaseChange { _, phase in
                 expansion.isScrolling = phase != .idle
             }

@@ -122,6 +122,8 @@ struct CinematicBackdrop: View {
     /// The folder's own hero video. It plays once over the still artwork and
     /// then fades back to it, rather than looping behind the title.
     var videoURL: URL? = nil
+    /// The hero video is over, as it fades back to the still.
+    var onVideoFinish: () -> Void = {}
 
     @Environment(\.palette) private var palette
     @State private var drifted = false
@@ -137,7 +139,7 @@ struct CinematicBackdrop: View {
                 .clipped()
 
             if let videoURL {
-                HeroVideo(url: videoURL, isActive: isActive)
+                HeroVideo(url: videoURL, isActive: isActive, onFinish: onVideoFinish)
                     .frame(height: height)
                     .frame(maxWidth: .infinity)
                     .clipped()
@@ -395,8 +397,21 @@ struct FolderScreen: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selected: MetaSelection?
+    /// The folder's hero video has finished (or never played), so its title
+    /// can show. Folders without a hero video never wait.
+    @State private var heroVideoDone = false
     /// Folders only: the shell's own tabs do this everywhere else.
     @State private var typeFilter: FolderTypeFilter = .all
+    #if os(macOS)
+    /// Which card in the single-catalog grid is open, so its row makes room.
+    @State private var gridExpansion = ShelfExpansion()
+    /// The grid's own width, which decides how many columns fit.
+    @State private var gridWidth: CGFloat = 0
+    #endif
+
+    private var titleHeldBack: Bool {
+        open.folder.heroVideoURL.flatMap(URL.init(string:)) != nil && !heroVideoDone
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -406,21 +421,32 @@ struct FolderScreen: View {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     banner
 
-                    if !model.tabs.isEmpty {
-                        filterBar
-                    }
+                    // Nothing under the banner shows until the hero video is
+                    // over: the video plays alone, like a cold open, and the
+                    // page comes in after it. Disabled meanwhile so the TV's
+                    // focus can't land on a row nobody can see.
+                    VStack(alignment: .leading, spacing: 18) {
+                        if !model.tabs.isEmpty {
+                            filterBar
+                        }
 
-                    if !model.skippedProviders.isEmpty {
-                        note(
-                            "\(model.skippedProviders.joined(separator: " and ")) sources in this folder need credentials this device doesn't have."
-                        )
-                    }
+                        if !model.skippedProviders.isEmpty {
+                            note(
+                                "\(model.skippedProviders.joined(separator: " and ")) sources in this folder need credentials this device doesn't have."
+                            )
+                        }
 
-                    rows
+                        rows
+                    }
+                    .opacity(titleHeldBack ? 0 : 1)
+                    .offset(y: titleHeldBack ? 24 : 0)
+                    .disabled(titleHeldBack)
+                    .animation(.easeOut(duration: 1.0).delay(0.25), value: titleHeldBack)
                 }
                 .padding(.bottom, Phone.tabBarClearance)
             }
             .scrollIndicators(.hidden)
+            .scrollDisabled(titleHeldBack)
             // The banner is allowed under the status bar and the nav bar —
             // artwork that stops short of the edges isn't a title card.
             .ignoresSafeArea(edges: .top)
@@ -459,13 +485,21 @@ struct FolderScreen: View {
                         .flatMap(URL.init(string:)),
                     animated: open.folder.animatedCoverURL,
                     height: bannerHeight,
-                    videoURL: open.folder.heroVideoURL.flatMap(URL.init(string:))
+                    videoURL: open.folder.heroVideoURL.flatMap(URL.init(string:)),
+                    onVideoFinish: { heroVideoDone = true }
                 )
 
                 VStack(spacing: 10) {
                     titleTreatment(content: content)
                 }
                 .overArtwork()
+                // While the hero video plays the title stays out of the way,
+                // then comes in as the video fades back to the still: a
+                // slow fade with a small rise, so it settles into place
+                // rather than snapping on.
+                .opacity(titleHeldBack ? 0 : 1)
+                .offset(y: titleHeldBack ? 14 : 0)
+                .animation(.easeOut(duration: 1.0), value: titleHeldBack)
                 .frame(width: content)
                 .padding(.bottom, Phone.billboardBottomInset)
             }
@@ -639,13 +673,47 @@ struct FolderScreen: View {
             note("\(tab.label) didn't respond.")
         case .loaded(let all):
             let items = all.filter { typeFilter.matches($0.type) }
+            let cardWidth = (Phone.posterWidth * 0.88).rounded()
+            #if os(macOS)
+            // Fixed columns rather than adaptive ones, so each slot is exactly
+            // the card's width and the grid can tell a card near the end of a
+            // row how far its neighbours must slide left to give it room.
+            let spacing = Phone.posterSpacing
+            let columns = max(Int((gridWidth + spacing) / (cardWidth + spacing)), 1)
+            let metrics = RowMetrics(
+                columnsPerRow: columns,
+                slotWidth: cardWidth,
+                pitch: cardWidth + spacing
+            )
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: Phone.posterWidth * 0.88), spacing: Phone.posterSpacing)],
+                columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: columns),
+                alignment: .leading,
+                spacing: 18
+            ) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
+                    let baseURL = model.baseURL(for: item, tab: tab)
+                    PosterCard(item: item, addonBaseURL: baseURL, width: cardWidth) {
+                        selected = MetaSelection(
+                            item: item,
+                            addonBaseURL: baseURL,
+                            related: items
+                        )
+                    }
+                    .standingAside(for: gridExpansion, slot: offset, metrics: metrics)
+                }
+            }
+            .environment(gridExpansion)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
+            .padding(.horizontal, Phone.pagePadding)
+            #else
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: cardWidth), spacing: Phone.posterSpacing)],
                 spacing: 18
             ) {
                 ForEach(items) { item in
                     let baseURL = model.baseURL(for: item, tab: tab)
-                    PosterCard(item: item, addonBaseURL: baseURL, width: (Phone.posterWidth * 0.88).rounded()) {
+                    PosterCard(item: item, addonBaseURL: baseURL, width: cardWidth) {
                         selected = MetaSelection(
                             item: item,
                             addonBaseURL: baseURL,
@@ -655,6 +723,7 @@ struct FolderScreen: View {
                 }
             }
             .padding(.horizontal, Phone.pagePadding)
+            #endif
         }
     }
 

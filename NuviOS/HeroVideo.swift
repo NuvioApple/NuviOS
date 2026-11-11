@@ -92,10 +92,17 @@ struct HeroVideo: View {
     /// A beat before it starts, so a page that is still settling isn't also
     /// starting a download.
     var delay: Duration = .milliseconds(600)
+    /// How long to wait for a first frame before giving up on the video.
+    var patience: Duration = .seconds(8)
+    /// Called once per play when the video is over — it ended, it never
+    /// started, or it was cut short — as its fade out begins. A title that
+    /// was held back for the video comes in on this.
+    var onFinish: () -> Void = {}
 
     @State private var player: AVPlayer?
     @State private var isShowing = false
     @State private var endObserver: NSObjectProtocol?
+    @State private var didFinish = false
 
     var body: some View {
         ZStack {
@@ -130,6 +137,7 @@ struct HeroVideo: View {
             queue: .main
         ) { _ in
             Task { @MainActor in
+                finish()
                 withAnimation(.easeInOut(duration: 0.9)) { isShowing = false }
                 // Let the fade finish before the player goes.
                 try? await Task.sleep(for: .seconds(1))
@@ -137,8 +145,23 @@ struct HeroVideo: View {
             }
         }
 
+        didFinish = false
         player = next
         next.play()
+
+        // A video that never produces a frame — a dead link, a stalled
+        // connection — must not keep a title waiting behind it for good.
+        try? await Task.sleep(for: patience)
+        if !Task.isCancelled, player === next, !isShowing {
+            finish()
+            teardown()
+        }
+    }
+
+    private func finish() {
+        guard !didFinish else { return }
+        didFinish = true
+        onFinish()
     }
 
     private func teardown() {

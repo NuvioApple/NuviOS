@@ -95,6 +95,16 @@ enum PlaybackProgress {
         save(entries)
     }
 
+    /// Forgets every resume point of a title: the film, or each episode.
+    static func clear(contentID: String) {
+        var entries = all()
+        for key in entries.keys {
+            let id = key.split(separator: "|", maxSplits: 1).last.map(String.init) ?? key
+            if id == contentID || id.hasPrefix(contentID + ":") { entries.removeValue(forKey: key) }
+        }
+        save(entries)
+    }
+
     static func clear(key: String) {
         var entries = all()
         entries.removeValue(forKey: key)
@@ -110,9 +120,11 @@ enum PlaybackProgress {
     static func inProgress() -> [(key: String, entry: Entry)] {
         all()
             .filter { _, entry in
-                guard entry.duration > 0 else { return false }
-                let fraction = entry.seconds / entry.duration
-                return fraction >= 0.02 && fraction < completionThreshold
+                // Anything with a resume point is on the shelf, so it can be
+                // removed from there; a 2% floor hid an hour-long film's first
+                // minutes while the detail page still offered to resume them.
+                guard entry.duration > 0, entry.seconds >= minimumResume else { return false }
+                return entry.seconds / entry.duration < completionThreshold
             }
             .sorted { $0.value.updated > $1.value.updated }
             .map { ($0.key, $0.value) }

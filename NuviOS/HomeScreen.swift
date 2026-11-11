@@ -441,6 +441,174 @@ struct HomeHero: View {
     }
 }
 
+/// The "fixed hero": a stage pinned to the top of the screen that follows
+/// focus. Whatever poster is focused below takes the stage — artwork, copy
+/// and trailer — the way the carousel's own titles do. It holds no buttons:
+/// the cards are the controls, and pressing one opens it as always.
+struct PinnedHero: View {
+    /// Rotated through until a card has focus.
+    let items: [HeroItem]
+    let metrics: LayoutMetrics
+
+    @Environment(HeroFocus.self) private var heroFocus: HeroFocus?
+    @Environment(\.palette) private var palette
+    @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var tmdb: TmdbSettings
+
+    @State private var index = 0
+    @State private var isTrailerPlaying = false
+
+    /// The stage's share of the screen; the rest is the shelves.
+    private static let share: CGFloat = 0.56
+
+    private var current: HeroItem? {
+        if let focused = heroFocus?.item { return focused }
+        guard !items.isEmpty else { return nil }
+        return items[min(index, items.count - 1)]
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            palette.background
+            if let current {
+                backdrop(current)
+                scrims
+                copy(current)
+            }
+        }
+        .containerRelativeFrame(.vertical) { length, _ in length * Self.share }
+        .frame(maxWidth: .infinity)
+        .clipped()
+        .overlay(alignment: .bottomTrailing) { soundBadge }
+        .ignoresSafeArea(edges: [.top, .horizontal])
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+        .task(id: items.count) { await rotate() }
+    }
+
+    private func backdrop(_ hero: HeroItem) -> some View {
+        GeometryReader { geo in
+            let height = geo.size.height
+            let width = height * 16 / 9
+            ZStack {
+                KenBurnsImage(
+                    url: AddonClient.resolve(hero.item.background ?? hero.item.poster, relativeTo: hero.addonBaseURL)
+                )
+                .id(hero.id)
+                .transition(.opacity)
+
+                // A longer rest than the carousel's: focus sweeping along a
+                // shelf shouldn't start a stream for every poster it passes.
+                FocusTrailerPreview(
+                    item: hero.item,
+                    isActive: scenePhase == .active,
+                    delay: .milliseconds(900),
+                    onPlayingChange: { isTrailerPlaying = $0 }
+                )
+                .id(hero.id)
+                .aspectRatio(16 / 9, contentMode: .fill)
+                .scaleEffect(1.2)
+            }
+            .animation(.easeInOut(duration: 0.45), value: hero.id)
+            .frame(width: width, height: height)
+            .clipped()
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black.opacity(0.55), location: 0.16),
+                        .init(color: .black, location: 0.42),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .trailing)
+        }
+    }
+
+    private var scrims: some View {
+        ZStack {
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.5), location: 0),
+                    .init(color: .clear, location: 0.3),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.6), location: 0),
+                    .init(color: .clear, location: 0.5),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            // Last, so nothing darkens it: the stage ends in exactly the
+            // page's colour and the shelves meet it without a seam.
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.55),
+                    .init(color: palette.background, location: 0.97),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+
+    private func copy(_ hero: HeroItem) -> some View {
+        VStack(alignment: .leading, spacing: metrics.lerp(8, 14)) {
+            HeroTitleTreatment(hero: hero, metrics: metrics)
+            HeroFacts(item: hero.item, metrics: metrics)
+            if let synopsis = hero.item.description?.trimmed, !synopsis.isEmpty {
+                Text(synopsis)
+                    .font(.system(size: metrics.lerp(14, 22)))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(2)
+                    .lineSpacing(metrics.lerp(3, 6))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .overArtwork()
+            }
+        }
+        .frame(width: metrics.heroContentWidth, alignment: .leading)
+        .padding(.horizontal, metrics.pagePadding)
+        .padding(.bottom, metrics.lerp(16, 30))
+        .animation(.easeInOut(duration: 0.35), value: hero.id)
+    }
+
+    @ViewBuilder
+    private var soundBadge: some View {
+        if isTrailerPlaying {
+            Image(systemName: tmdb.trailerSound ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                .font(.system(size: metrics.lerp(14, 22), weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: metrics.lerp(30, 52), height: metrics.lerp(30, 52))
+                .glassEffect(.regular, in: .circle)
+                .padding(.trailing, metrics.pagePadding)
+                .padding(.bottom, metrics.lerp(16, 30))
+                .transition(.opacity)
+        }
+    }
+
+    /// Before anything is focused the stage pages through `items` on its own;
+    /// once a card has focus, focus drives it.
+    private func rotate() async {
+        guard items.count > 1 else { return }
+        var held = 0
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(1))
+            if heroFocus?.item != nil || isTrailerPlaying { held = 0; continue }
+            held += 1
+            if held >= 9 {
+                held = 0
+                withAnimation(.easeInOut(duration: 0.7)) { index = (index + 1) % items.count }
+            }
+        }
+    }
+}
+
 /// The hero's buttons: a quiet glass pill at rest, and a solid white one only
 /// while it holds focus, so exactly one of the pair ever reads as selected.
 private struct HeroButtonStyle: ButtonStyle {

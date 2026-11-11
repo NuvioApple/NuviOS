@@ -452,11 +452,9 @@ struct NuvioButtonStyle: ButtonStyle {
                         lineWidth: active ? 2 : 1
                     )
             }
-            .shadow(
-                color: active ? palette.accent.opacity(0.45) : .black.opacity(0.35),
-                radius: active ? 26 : 10,
-                y: active ? 12 : 4
-            )
+            // A plain drop shadow only: a coloured halo on focus read as a
+            // glow bleeding into the artwork.
+            .shadow(color: .black.opacity(active ? 0.4 : 0.3), radius: active ? 12 : 8, y: active ? 6 : 3)
             .scaleEffect(configuration.isPressed ? 0.97 : (isFocused ? 1.06 : 1))
             .opacity(isEnabled ? 1 : 0.4)
             .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)

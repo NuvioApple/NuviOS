@@ -10,6 +10,7 @@ struct ProfileScreen: View {
     @EnvironmentObject private var profiles: ProfileStore
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var membership: MembershipStore
+    @ObservedObject private var preRollSettings = PreRollSettings.shared
     @EnvironmentObject private var tmdb: TmdbSettings
 
     let subtitle: String
@@ -39,6 +40,8 @@ struct ProfileScreen: View {
     @State private var showTmdbKey = false
     /// A title opened from My List, pushed onto this tab's own stack.
     @State private var selected: MetaSelection?
+    /// nuvio.tv/account, native, pushed on this tab's stack.
+    @State private var showsNuvioAccount = false
 
     var body: some View {
         NavigationStack {
@@ -57,6 +60,7 @@ struct ProfileScreen: View {
                         #else
                         tvTrailers
                         #endif
+                        preRoll
                         account
                         server
                         #if os(iOS) || os(macOS)
@@ -68,8 +72,13 @@ struct ProfileScreen: View {
                     .padding(.bottom, 72)
                 }
             }
+            #if !os(tvOS)
             .navigationTitle("Profile")
+            #endif
             .scrollEdgeEffectStyle(.soft, for: .top)
+            #if !os(tvOS)
+            // On tvOS the toolbar pencil floated over the first card; the
+            // switcher carries its own Edit button there instead.
             .toolbar {
                 ToolbarItem(placement: .platformTopTrailing) {
                     Button("Edit profile", systemImage: "pencil") {
@@ -77,7 +86,11 @@ struct ProfileScreen: View {
                     }
                 }
             }
+            #endif
             .navigationDestination(item: $selected) { TitleDetail(selection: $0) }
+            #if os(iOS) || os(macOS)
+            .navigationDestination(isPresented: $showsNuvioAccount) { NuvioAccountScreen() }
+            #endif
             .sheet(item: $destination) { destination in
                 Group {
                     switch destination {
@@ -144,8 +157,10 @@ struct ProfileScreen: View {
                                             .white.opacity(profile.index == profiles.currentIndex ? 0.95 : 0.55)
                                         )
                                         .lineLimit(1)
+                                        .minimumScaleFactor(0.8)
                                 }
-                                .frame(width: 78)
+                                // Wide enough for a name like "George" on a TV.
+                                .frame(width: 96)
                             }
                             .buttonStyle(.pressable)
                             #if os(iOS) || os(macOS)
@@ -191,7 +206,7 @@ struct ProfileScreen: View {
                                     .font(.caption.weight(.medium))
                                     .foregroundStyle(.white.opacity(0.55))
                             }
-                            .frame(width: 78)
+                            .frame(width: 96)
                         }
                         .buttonStyle(.pressable)
                     }
@@ -199,6 +214,12 @@ struct ProfileScreen: View {
                 .padding(.vertical, 4)
                 .padding(.horizontal, 2)
             }
+
+            #if os(tvOS)
+            Button("Edit profile") { destination = .editor(profiles.current) }
+                .buttonStyle(NuvioButtonStyle(kind: .glass, icon: "pencil", compact: true))
+                .padding(.vertical, 6)
+            #endif
 
             Text("\(profiles.profiles.count) of \(Profile.maxProfiles) profiles · synced with your account")
                 .font(.caption2)
@@ -224,7 +245,9 @@ struct ProfileScreen: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: Phone.posterSpacing) {
+                    // Eager, not lazy: a lazy row here was skipped by the
+                    // focus engine on tvOS, so the posters couldn't be reached.
+                    HStack(spacing: Phone.posterSpacing) {
                         ForEach(library.titles) { saved in
                             PosterCard(
                                 item: saved.item,
@@ -240,6 +263,9 @@ struct ProfileScreen: View {
                                     related: library.titles.map(\.item)
                                 )
                             }
+                            #if !os(tvOS)
+                            // On tvOS this menu stopped the card taking focus;
+                            // the details page's "In My List" removes it there.
                             .contextMenu {
                                 Button(
                                     "Remove from My List",
@@ -249,13 +275,26 @@ struct ProfileScreen: View {
                                     library.remove(saved)
                                 }
                             }
+                            #endif
                         }
                     }
                     .padding(.vertical, 2)
+                    #if os(tvOS)
+                    .padding(.horizontal, 10)
+                    #endif
                 }
+                // Only as tall as the posters: left to itself the lazy row
+                // took the card's offered height and left an empty band.
+                .fixedSize(horizontal: false, vertical: true)
+                #if os(tvOS)
+                // A focused poster grows; let it, rather than clipping its
+                // left edge and caption at the row's bounds.
+                .scrollClipDisabled()
+                #else
                 // The card's own padding is the breathing room; the row runs
                 // to both edges of it rather than sitting in an inset well.
                 .padding(.horizontal, -4)
+                #endif
             }
         }
     }
@@ -394,6 +433,9 @@ struct ProfileScreen: View {
                 Toggle("Play a trailer in the hero when a title is focused", isOn: $tmdb.focusPreviews)
                     .tint(theme.palette.accent)
 
+                Toggle("Fixed hero on Movies & Series: play the focused poster's trailer", isOn: $tmdb.pinnedHero)
+                    .tint(theme.palette.accent)
+
                 Toggle("Play trailer sound (Play/Pause mutes)", isOn: $tmdb.trailerSound)
                     .tint(theme.palette.accent)
 
@@ -412,6 +454,35 @@ struct ProfileScreen: View {
         }
     }
     #endif
+
+    // MARK: Before the movie
+
+    private var preRoll: some View {
+        Section(title: "Before the movie") {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("Play trailers before movies", isOn: $preRollSettings.trailersEnabled)
+                    .tint(theme.palette.accent)
+                if preRollSettings.trailersEnabled {
+                    Picker("Trailers", selection: $preRollSettings.trailerCount) {
+                        ForEach(1...3, id: \.self) { Text("\($0)").tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                Toggle("Play an intro before movies", isOn: $preRollSettings.introEnabled)
+                    .tint(theme.palette.accent)
+                if preRollSettings.introEnabled {
+                    TextField("Intro video address (one per line)", text: $preRollSettings.introURLs, axis: .vertical)
+                        .autocorrectionDisabled()
+                        .platformNoAutocapitalization()
+                }
+                Text("Trailers are for movies and shows opening in the next six months, matched to the genre. Skipped when resuming more than 5 minutes in.")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.45))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundStyle(.white)
+        }
+    }
 
     // MARK: Account
 
@@ -460,6 +531,13 @@ struct ProfileScreen: View {
                     .disabled(model.isLoading)
 
                     #if os(iOS) || os(macOS)
+                    if case .signedIn = session.state {
+                        Button("Manage account", systemImage: "slider.horizontal.3") {
+                            showsNuvioAccount = true
+                        }
+                        .buttonStyle(.glassProminent)
+                        .tint(theme.palette.accent)
+                    }
                     if session.dashboardURL != nil {
                         Button("Dashboard", systemImage: "safari") { openDashboard() }
                             .buttonStyle(.glass)
@@ -539,6 +617,12 @@ struct ProfileScreen: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .glassCard(cornerRadius: 22)
+            #if os(tvOS)
+            // Each card is one stop for Up/Down. Without this the remote only
+            // moves straight down, so from "Add" it skipped past a My List
+            // poster that sits further left.
+            .focusSection()
+            #endif
         }
     }
 }

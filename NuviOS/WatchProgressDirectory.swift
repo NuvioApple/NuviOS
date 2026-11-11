@@ -122,6 +122,32 @@ enum WatchProgressDirectory {
         }
     }
 
+    /// Removes rows by their `progress_key` (`tt…` for a film, `tt…_s2e7` for
+    /// an episode), the same call the Android client makes.
+    static func delete(
+        keys: [String],
+        configuration: ServerConfiguration,
+        accessToken: String,
+        profileID: Int,
+        session: URLSession = .shared
+    ) async {
+        guard !keys.isEmpty, let request = rpc(
+            "sync_delete_watch_progress",
+            body: [
+                "p_keys": keys,
+                "p_profile_id": profileID,
+                "p_origin_client_id": SyncClientIdentity.current
+            ],
+            configuration: configuration,
+            accessToken: accessToken
+        ) else { return }
+        guard let (data, response) = try? await session.data(for: request) else { return }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if !(200..<300).contains(status) {
+            print("[continue-watching] delete failed: HTTP \(status) \(String(data: data, encoding: .utf8)?.prefix(240) ?? "")")
+        }
+    }
+
     private static func pull(
         configuration: ServerConfiguration,
         accessToken: String,

@@ -17,19 +17,26 @@ struct ProfileGate<Content: View>: View {
 
     private var needsChoice: Bool { profiles.profiles.count > 1 && !hasChosen }
 
-    private let itemWidth: CGFloat = 108
+    /// Big, the way Disney+ does it: the faces are the whole screen.
+    #if os(tvOS)
+    private let avatarSize: CGFloat = 220
+    private let itemSpacing: CGFloat = 70
+    #elseif os(macOS)
+    private let avatarSize: CGFloat = 130
+    private let itemSpacing: CGFloat = 40
+    #else
+    private let avatarSize: CGFloat = 104
     private let itemSpacing: CGFloat = 26
+    #endif
+    /// Room for the focused avatar to grow without touching its neighbours.
+    private var itemWidth: CGFloat { avatarSize * 1.18 }
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: itemWidth), spacing: itemSpacing)]
     }
 
-    /// The width the profiles would occupy on a single row. An adaptive grid
-    /// takes every point it is offered and fills columns from the leading
-    /// edge, so on a wide window two profiles end up pinned to the left of a
-    /// row sized for a dozen. Capping the grid at its natural width lets the
-    /// enclosing VStack centre it, while a window too narrow for one row still
-    /// gets the full width and wraps as before.
+    /// The width the profiles would occupy on a single row, so a short row is
+    /// centred rather than pinned to the leading edge of a wide grid.
     private var naturalWidth: CGFloat {
         let count = CGFloat(max(profiles.profiles.count, 1))
         return count * itemWidth + (count - 1) * itemSpacing
@@ -63,63 +70,93 @@ struct ProfileGate<Content: View>: View {
         }
     }
 
+    @FocusState private var focusedProfile: Int?
+
     private var chooser: some View {
         ZStack {
             NuvioBackground(intensity: 0.3).ignoresSafeArea()
 
-            VStack(spacing: 34) {
+            VStack(spacing: titleGap) {
                 Spacer(minLength: 0)
 
-                // Upstream's own wording, and no wordmark: Nuvio doesn't put
-                // its name on this screen.
-                VStack(spacing: 6) {
-                    Text("Who's watching?")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                    Text("Select a profile to continue")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.55))
-                }
+                Text("Who's watching?")
+                    .font(.system(size: titleSize, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
 
-                LazyVGrid(columns: columns, spacing: 26) {
+                LazyVGrid(columns: columns, spacing: itemSpacing) {
                     ForEach(profiles.profiles) { profile in
                         Button {
                             choose(profile)
                         } label: {
-                            VStack(spacing: 10) {
-                                ProfileAvatar(
-                                    profile: profile,
-                                    size: 92,
-                                    isActive: profile.index == profiles.currentIndex,
-                                    activeRing: palette.accent
-                                )
-                                Text(profile.name)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.white.opacity(0.85))
-                                    .lineLimit(1)
-                            }
+                            Text(profile.name)  // the style draws the tile
                         }
-                        .buttonStyle(.pressable)
+                        .buttonStyle(ProfileTileStyle(profile: profile, size: avatarSize))
+                        .focused($focusedProfile, equals: profile.index)
                     }
+                }
+                // The remote starts on whoever watched last, so carrying on is
+                // a single press.
+                .defaultFocus($focusedProfile, profiles.currentIndex)
+                .onAppear {
+                    DispatchQueue.main.async { focusedProfile = profiles.currentIndex }
                 }
                 .frame(maxWidth: naturalWidth)
                 .padding(.horizontal, 28)
-
-                Button("Continue as \(profiles.current.name)") {
-                    choose(profiles.current)
-                }
-                .font(.subheadline.weight(.semibold))
-                .tint(.white.opacity(0.5))
 
                 Spacer(minLength: 0)
             }
         }
     }
 
+    #if os(tvOS)
+    private let titleSize: CGFloat = 56
+    private let titleGap: CGFloat = 70
+    #else
+    private let titleSize: CGFloat = 30
+    private let titleGap: CGFloat = 34
+    #endif
+
     private func choose(_ profile: Profile) {
         profiles.select(profile)
         library.activate(profile: profile)
         withAnimation(.easeInOut(duration: 0.35)) { hasChosen = true }
+    }
+}
+
+/// One profile on the chooser. Focused, it grows and gets a bright ring and
+/// glow, and its name lights up; the rest dim back, so it's obvious from the
+/// sofa which one Select will open.
+private struct ProfileTileStyle: ButtonStyle {
+    let profile: Profile
+    let size: CGFloat
+
+    func makeBody(configuration: Configuration) -> some View {
+        FocusReader { isFocused in
+            #if os(tvOS)
+            let lit = isFocused
+            let dims = true
+            #else
+            let lit = configuration.isPressed
+            let dims = false
+            #endif
+            VStack(spacing: size * 0.12) {
+                ProfileAvatar(profile: profile, size: size)
+                    .overlay {
+                        Circle()
+                            .strokeBorder(.white, lineWidth: max(3, size * 0.03))
+                            .opacity(lit ? 1 : 0)
+                    }
+                    .shadow(color: .white.opacity(lit ? 0.35 : 0), radius: size * 0.12)
+                    .scaleEffect(lit ? 1.12 : 1)
+
+                Text(profile.name)
+                    .font(.system(size: max(15, size * 0.13), weight: lit ? .bold : .semibold))
+                    .foregroundStyle(.white.opacity(lit || !dims ? 1 : 0.5))
+                    .lineLimit(1)
+            }
+            .opacity(lit || !dims ? 1 : 0.55)
+            .animation(.spring(response: 0.3, dampingFraction: 0.75), value: lit)
+        }
     }
 }
 #endif

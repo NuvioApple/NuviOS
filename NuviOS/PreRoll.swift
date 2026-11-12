@@ -12,6 +12,9 @@ final class PreRollSettings: ObservableObject {
 
     private static let introEnabledKey = "nuvio.preroll.introEnabled"
     private static let introURLsKey = "nuvio.preroll.introURLs"
+    private static let bundledIntroIDsKey = "nuvio.preroll.bundledIntroIDs"
+    private static let introBagKey = "nuvio.preroll.introBag"
+    private static let lastIntroKey = "nuvio.preroll.lastIntro"
     private static let trailersEnabledKey = "nuvio.preroll.trailersEnabled"
     private static let trailerCountKey = "nuvio.preroll.trailerCount"
 
@@ -34,11 +37,58 @@ final class PreRollSettings: ObservableObject {
         didSet { defaults.set(trailerCount, forKey: Self.trailerCountKey) }
     }
 
+    /// The cinema intros shipped in the app (same set as Trailer Tape).
+    struct BundledIntro: Identifiable, Hashable {
+        let file: String
+        let title: String
+        let brand: String
+        var id: String { file }
+        var url: URL? { Bundle.main.url(forResource: file, withExtension: "mp4") }
+    }
+
+    static let bundledIntros: [BundledIntro] = [
+        BundledIntro(file: "IMAXCountdown", title: "Countdown", brand: "IMAX"),
+        BundledIntro(file: "IMAXNeverCompromise", title: "Never Compromise", brand: "IMAX"),
+        BundledIntro(file: "IMAXPreShow", title: "Pre-Show", brand: "IMAX"),
+        BundledIntro(file: "DolbyCinema", title: "Dolby Cinema", brand: "Dolby"),
+        BundledIntro(file: "DolbyUniverse", title: "Dolby Universe", brand: "Dolby"),
+        BundledIntro(file: "InfinityVision", title: "Infinity Vision", brand: "Infinity Vision"),
+    ].filter { $0.url != nil }
+
+    /// Which bundled intros are in the random pool. All of them to start.
+    @Published var bundledIntroIDs: Set<String> {
+        didSet { defaults.set(Array(bundledIntroIDs), forKey: Self.bundledIntroIDsKey) }
+    }
+
     var introCandidates: [URL] {
-        introURLs
+        let custom = introURLs
             .split(whereSeparator: \.isNewline)
             .compactMap { URL(string: String($0).trimmingCharacters(in: .whitespaces)) }
             .filter { $0.scheme == "https" || $0.scheme == "http" || $0.isFileURL }
+        let bundled = Self.bundledIntros.filter { bundledIntroIDs.contains($0.id) }.compactMap(\.url)
+        return bundled + custom
+    }
+
+    /// The next intro, shuffle-bag style: every intro in the pool plays once,
+    /// in random order, before any repeats, and a fresh round never opens with
+    /// the one that just played. Plain random picks repeat far too often for
+    /// a handful of clips. The bag is kept, so it carries on across launches.
+    func nextIntro() -> URL? {
+        let pool = introCandidates
+        guard !pool.isEmpty else { return nil }
+        let byKey = Dictionary(pool.map { ($0.absoluteString, $0) }, uniquingKeysWith: { a, _ in a })
+        let last = defaults.string(forKey: Self.lastIntroKey)
+
+        // Drop anything no longer in the pool (switched off, or removed).
+        var bag = (defaults.stringArray(forKey: Self.introBagKey) ?? []).filter { byKey[$0] != nil }
+        if bag.isEmpty {
+            bag = Array(byKey.keys).shuffled()
+            if bag.count > 1, bag.first == last { bag.swapAt(0, Int.random(in: 1..<bag.count)) }
+        }
+        let next = bag.removeFirst()
+        defaults.set(bag, forKey: Self.introBagKey)
+        defaults.set(next, forKey: Self.lastIntroKey)
+        return byKey[next]
     }
 
     var isActive: Bool {
@@ -49,6 +99,8 @@ final class PreRollSettings: ObservableObject {
         self.defaults = defaults
         introEnabled = defaults.object(forKey: Self.introEnabledKey) as? Bool ?? false
         introURLs = defaults.string(forKey: Self.introURLsKey) ?? ""
+        bundledIntroIDs = Set(defaults.stringArray(forKey: Self.bundledIntroIDsKey)
+            ?? Self.bundledIntros.map(\.id))
         trailersEnabled = defaults.object(forKey: Self.trailersEnabledKey) as? Bool ?? false
         let count = defaults.object(forKey: Self.trailerCountKey) as? Int ?? 2
         trailerCount = min(max(count, 1), 3)
@@ -480,7 +532,7 @@ enum PreRollBuilder {
             }
             clips += found
         }
-        if settings.introEnabled, let intro = settings.introCandidates.randomElement() {
+        if settings.introEnabled, let intro = settings.nextIntro() {
             clips.append(PreRollClip(url: intro, label: "Intro", kicker: "Up next: \(title)"))
         }
         return clips

@@ -343,34 +343,4 @@ final class AetherPlaybackEngine: PlaybackEngine {
             }
         }
     }
-
-    // MARK: Chapters
-
-    /// Container chapters (Matroska / MP4) and disc chapters are published
-    /// separately; a session is one or the other, so whichever is non-empty is
-    /// the list the transport walks.
-    private var chapterList: [ChapterInfo] {
-        engine.mediaChapters.isEmpty ? engine.discChapters : engine.mediaChapters
-    }
-
-    var chapters: [MediaChapter] {
-        chapterList.enumerated().map { index, chapter in
-            MediaChapter(chapterIndex: index, name: chapter.name, startSeconds: chapter.startSeconds)
-        }
-    }
-
-    var chapterIndex: Int {
-        let now = currentTime
-        return chapterList.lastIndex { $0.startSeconds <= now + 0.25 } ?? -1
-    }
-
-    func select(chapterIndex index: Int) {
-        guard chapterList.indices.contains(index) else { return }
-        seek(toSeconds: chapterList[index].startSeconds)
-    }
-
-    /// No chapter transport of its own; the screen's own walk is exact anyway,
-    /// since every chapter here carries the timestamp to seek to.
-    @discardableResult
-    func skipChapter(forward: Bool) -> Bool { false }
 }

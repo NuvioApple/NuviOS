@@ -207,32 +207,6 @@ final class VLCPlaybackEngine: NSObject, PlaybackEngine {
     /// libvlc burns subtitles into the picture, so the host draws none.
     var hostSubtitleCues: [HostSubtitleCue] { [] }
 
-    // MARK: Chapters
-
-    var chapters: [MediaChapter] {
-        player.chapterDescriptions(ofTitle: player.currentTitleIndex)
-            .enumerated()
-            .map { index, chapter in
-                MediaChapter(
-                    chapterIndex: index,
-                    name: chapter.name,
-                    startSeconds: Double(chapter.timeOffset.intValue) / 1000
-                )
-            }
-    }
-
-    var chapterIndex: Int { Int(player.currentChapterIndex) }
-
-    func select(chapterIndex index: Int) {
-        player.currentChapterIndex = Int32(index)
-    }
-
-    @discardableResult
-    func skipChapter(forward: Bool) -> Bool {
-        if forward { player.nextChapter() } else { player.previousChapter() }
-        return true
-    }
-
     /// Confirms the opening actually began where it was asked to.
     private func confirmResumeLanded() {
         guard let target = resumeTargetInFlight else { return }
@@ -288,10 +262,6 @@ extension VLCPlaybackEngine: VLCMediaPlayerDelegate {
 
     nonisolated func mediaPlayerBufferingChanged(_ progress: Float) {
         Task { @MainActor in delegate?.engine(self, isBuffering: progress < 100) }
-    }
-
-    nonisolated func mediaPlayerChapterChanged(_ aNotification: Notification) {
-        Task { @MainActor in delegate?.engineDidUpdate(self) }
     }
 
     nonisolated func mediaPlayerTitleListChanged(_ aNotification: Notification) {

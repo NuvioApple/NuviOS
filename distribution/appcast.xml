@@ -3,32 +3,32 @@
     <channel>
         <title>NuviOS</title>
         <item>
-            <title>2026.11.11</title>
-            <pubDate>Wed, 11 Nov 2026 15:49:20 +0200</pubDate>
-            <sparkle:version>12</sparkle:version>
-            <sparkle:shortVersionString>2026.11.11</sparkle:shortVersionString>
+            <title>2026.11.12</title>
+            <pubDate>Thu, 12 Nov 2026 11:45:05 +0200</pubDate>
+            <sparkle:version>13</sparkle:version>
+            <sparkle:shortVersionString>2026.11.12</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <description sparkle:format="markdown"><![CDATA[### New
 
-- The Home hero is now picked for you. It shows newer films and shows similar
-  to what you're at least 40% through, instead of whatever is popular. Drag
-  across it, or swipe with two fingers on a trackpad, to move to the next one.
-- Remove a title from Continue Watching by right-clicking its card, or with
-  Clear Progress on the film's page. It's removed from your account's watch
-  history too, so it won't come back from another device.
-- The "Who's watching?" screen has bigger profile pictures.
+- Six cinema intros are built in: IMAX Countdown, IMAX Never Compromise,
+  IMAX Pre-Show, Dolby Cinema, Dolby Universe and Infinity Vision. Turn on
+  "Play an intro before movies" in the profile tab, then choose which ones
+  can play. Your own intro addresses still work alongside them.
+- Intros take turns. Each one you've switched on plays once, in random order,
+  before any of them comes round again, so you won't see the same one twice
+  in a row.
 
-### Better
+### Changed
 
-- Trailers before a movie no longer buffer. Each one downloads in full before
-  it plays, while the next one downloads in the background.
-- Restart now really starts the movie from the beginning, and plays the
-  trailers first.
-- Leaving a movie takes you back to its page rather than the list of sources.
-- Anything you've started shows on Continue Watching, even if you only watched
-  a minute or two.
+- The player no longer shows chapters: the Chapters menu, the chapter name
+  under the title, the marks on the time bar and the previous and next chapter
+  buttons are gone. The previous and next track keys on a keyboard or remote
+  now skip back and forward 10 seconds instead.
+
+This update is larger than usual, about 590 MB, because the intros are
+included in the app.
 ]]></description>
-            <enclosure url="https://github.com/NuvioApple/NuviOS/releases/download/v2026.11.11/NuvioOS-2026.11.11.dmg" length="74734166" type="application/octet-stream" sparkle:edSignature="ICDPWzzaNkZAcrz1AfUwRdOn9yGa3BojDOGB2vxodt6QQVfRAIbqQt9zOxwVdkPdXEHE9nH5PduiedUosB3PBg=="/>
+            <enclosure url="https://github.com/NuvioApple/NuviOS/releases/download/v2026.11.12/NuvioOS-2026.11.12.dmg" length="588397532" type="application/octet-stream" sparkle:edSignature="PLNMpegxmx6vyX/3oVrqzuq2neqgJ8XU5ETu8B6fc5sgE1aewpqjT4BRL6TB/yXU9NdMcTrMyzTff8oi1wwWDg=="/>
         </item>
     </channel>
 </rss>

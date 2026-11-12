@@ -25,15 +25,6 @@ struct MediaTrack: Identifiable, Equatable {
     var id: Int { trackId }
 }
 
-/// A chapter boundary, from a container that carries them.
-struct MediaChapter: Identifiable, Equatable {
-    let chapterIndex: Int
-    let name: String?
-    let startSeconds: Double
-
-    var id: Int { chapterIndex }
-}
-
 /// How the picture is fitted to the frame. AVPlayer offers the first two; the
 /// forced ratios are for the releases that carry a wrong one.
 enum VideoFit: String, CaseIterable, Identifiable {
@@ -145,15 +136,6 @@ protocol PlaybackEngine: AnyObject {
 
     /// Cues the host has to draw. Empty on an engine that draws its own.
     var hostSubtitleCues: [HostSubtitleCue] { get }
-
-    // Chapters
-    var chapters: [MediaChapter] { get }
-    var chapterIndex: Int { get }
-    func select(chapterIndex: Int)
-    /// Walks to the neighbouring chapter. False when the engine has no chapter
-    /// transport of its own and the screen should seek instead.
-    @discardableResult
-    func skipChapter(forward: Bool) -> Bool
 }
 
 /// What an engine tells the screen, on the main actor, in the screen's own
@@ -173,7 +155,7 @@ protocol PlaybackEngineDelegate: AnyObject {
     /// or the error the viewer finally sees.
     func engine(_ engine: PlaybackEngine, didFailWith reason: String)
     func engine(_ engine: PlaybackEngine, isBuffering: Bool)
-    /// Time, length, tracks or chapters moved; the screen re-reads what it
+    /// Time, length or tracks moved; the screen re-reads what it
     /// needs. Fires several times a second, so it does no work of its own.
     func engineDidUpdate(_ engine: PlaybackEngine)
 }

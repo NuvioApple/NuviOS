@@ -12,7 +12,7 @@ mkdir -p build
 LOG=build/mac.log
 STEPS_FILE=build/.mac-steps
 EXPECTED=$(cat "$STEPS_FILE" 2>/dev/null || echo 400)
-DERIVED=build/mac-run
+DERIVED=${DERIVED:-build/mac-run}
 BUNDLE_ID=tv.nuvio.unofficial.nuviotvos
 
 bold=$'\e[1m'; dim=$'\e[2m'; green=$'\e[32m'; red=$'\e[31m'; reset=$'\e[0m'

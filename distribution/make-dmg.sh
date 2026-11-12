@@ -32,7 +32,9 @@ if [ "$notarize" -eq 1 ]; then
     fi
 fi
 
-build="$here/build"
+# BUILD_DIR moves the scratch work (archive, export, staging) off a slow disk;
+# the DMG itself always lands here.
+build="${BUILD_DIR:-$here/build}"
 rm -rf "$build"
 mkdir -p "$build"
 log="$build/xcodebuild.log"
@@ -123,9 +125,15 @@ cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
 
 rm -f "$dmg"
+# An explicit size: hdiutil's own estimate from -srcfolder came out too small
+# once the bundled intro videos made the app ~640 MB, and it then fails with a
+# misleading "No space left on device". Half again the app's size, plus
+# headroom; UDZO compresses the result, so the DMG itself stays small.
+size_mb=$(( $(du -sm "$stage" | cut -f1) * 3 / 2 + 100 ))
 hdiutil create \
     -volname "NuvioOS" \
     -srcfolder "$stage" \
+    -size "${size_mb}m" \
     -ov -format UDZO \
     "$dmg" > /dev/null
 

@@ -70,9 +70,6 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
     @Published private(set) var rate: Float = 1
     @Published private(set) var fit: VideoFit = .fit
 
-    @Published private(set) var chapters: [MediaChapter] = []
-    @Published private(set) var chapterIndex: Int = -1
-
     /// The cues the running engine expects this app to draw. Empty while the
     /// libvlc fallback is playing, which burns its own into the picture.
     @Published private(set) var subtitleCues: [HostSubtitleCue] = []
@@ -99,7 +96,6 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
     @Published var notice: String?
 
     var isPlaying: Bool { phase == .playing }
-    var hasChapters: Bool { chapters.count > 1 }
 
     /// Held while the viewer drags the scrubber so incoming time updates
     /// don't fight the thumb.
@@ -747,56 +743,6 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
         refreshTracks()
     }
 
-    // MARK: Chapters
-
-    func refreshChapters() {
-        let list = engine.chapters
-        if list != chapters { chapters = list }
-        chapterIndex = engine.chapterIndex
-    }
-
-    func select(chapter: MediaChapter) {
-        engine.select(chapterIndex: chapter.chapterIndex)
-        chapterIndex = chapter.chapterIndex
-        currentTime = chapter.startSeconds
-        updateNowPlaying()
-    }
-
-    /// AVKit's chapter arrows: back to the start of this chapter unless we are
-    /// already at it, which is what a viewer means by "previous".
-    func skipChapter(forward: Bool) {
-        guard hasChapters else {
-            jump(forward ? Self.skipInterval : -Self.skipInterval)
-            return
-        }
-        // An engine with a chapter transport of its own walks the list; the
-        // other one is seeked, which is exact here because every chapter
-        // carries the timestamp it starts at.
-        if !engine.skipChapter(forward: forward) {
-            let here = chapterIndex
-            // "Previous" means the top of this chapter unless we are already
-            // sitting on it, the same rule the system player uses.
-            let atChapterHead = here >= 0
-                && currentTime - chapters[here].startSeconds < 3
-            let target: Int
-            if forward {
-                target = min(chapters.count - 1, max(0, here) + 1)
-            } else {
-                target = atChapterHead ? max(0, here - 1) : max(0, here)
-            }
-            guard chapters.indices.contains(target) else { return }
-            select(chapter: chapters[target])
-            return
-        }
-        refreshChapters()
-    }
-
-    var currentChapterName: String? {
-        guard hasChapters, chapterIndex >= 0, chapterIndex < chapters.count else { return nil }
-        let chapter = chapters[chapterIndex]
-        return chapter.name ?? "Chapter \(chapterIndex + 1)"
-    }
-
     // MARK: Resume
 
     /// Where playback should pick up, or nil to start at the top.
@@ -970,16 +916,15 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
             Task { @MainActor in self?.setRate(event.playbackRate) }
             return .success
         }
-        // On a file with chapters the track buttons walk them, which is what
-        // the system player does with a chaptered movie.
+        // The track buttons skip, the same distance as the on-screen buttons.
         centre.nextTrackCommand.isEnabled = true
         centre.nextTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.skipChapter(forward: true) }
+            Task { @MainActor in self?.jump(Self.skipInterval) }
             return .success
         }
         centre.previousTrackCommand.isEnabled = true
         centre.previousTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.skipChapter(forward: false) }
+            Task { @MainActor in self?.jump(-Self.skipInterval) }
             return .success
         }
     }
@@ -1041,7 +986,6 @@ extension NuvioPlayerModel: PlaybackEngineDelegate {
         if rate != 1 { engine.setRate(rate) }
         confirmResumeLanded()
         applyTrackPreferenceIfNeeded()
-        refreshChapters()
         readVolume()
         updateNowPlaying()
     }
@@ -1135,7 +1079,6 @@ extension NuvioPlayerModel: PlaybackEngineDelegate {
         guard second != lastTickSecond else { return }
         lastTickSecond = second
 
-        if hasChapters { refreshChapters() }
         updateNowPlaying()
 
         // Cheap enough to keep the resume point close to the truth without a
@@ -1557,7 +1500,7 @@ struct NuvioPlayerScreen: View {
     /// picture stays clear in the middle, everything sits in one band along the
     /// bottom over a deep gradient, and the clock rides top-right. It goes
     /// further than the system player in the places a sofa cares about: when
-    /// the film will end, the chapter you're in, and what the audio and
+    /// the film will end, and what the audio and
     /// subtitles are set to, all readable without opening a menu.
     private var tvChrome: some View {
         ZStack {
@@ -1587,7 +1530,7 @@ struct NuvioPlayerScreen: View {
                     Text(request.title)
                         .font(.system(size: 52, weight: .bold))
                         .lineLimit(1)
-                    if let subtitle = model.currentChapterName ?? request.subtitle {
+                    if let subtitle = request.subtitle {
                         Text(subtitle)
                             .font(.title3)
                             .foregroundStyle(.white.opacity(0.75))
@@ -1697,7 +1640,6 @@ struct NuvioPlayerScreen: View {
                 .prefersDefaultFocus(true, in: playerFocus)
                 .focused($tvFocus, equals: .play)
 
-                chapterMenu
                 subtitleMenu
                 audioMenu
                 speedMenu
@@ -1756,7 +1698,7 @@ struct NuvioPlayerScreen: View {
                 Text(request.title)
                     .font(PlayerChrome.titleFont)
                     .lineLimit(1)
-                if let subtitle = model.currentChapterName ?? request.subtitle {
+                if let subtitle = request.subtitle {
                     Text(subtitle)
                         .font(PlayerChrome.subtitleFont)
                         .foregroundStyle(.white.opacity(0.65))
@@ -1775,7 +1717,6 @@ struct NuvioPlayerScreen: View {
                     #if os(iOS) || os(macOS)
                     volumeControl
                     #endif
-                    chapterMenu
                     audioMenu
                     subtitleMenu
                     speedMenu
@@ -1807,13 +1748,6 @@ struct NuvioPlayerScreen: View {
 
     private var transportGlyphs: some View {
         HStack(spacing: PlayerChrome.transportSpacing) {
-            if model.hasChapters {
-                RoundIcon("backward.end.fill", label: "Previous chapter", size: .transport) {
-                    model.skipChapter(forward: false)
-                    scheduleHide()
-                }
-            }
-
             RoundIcon("gobackward.10", label: "Back 10 seconds", size: .transport) {
                 skip(by: -NuvioPlayerModel.skipInterval)
             }
@@ -1837,13 +1771,6 @@ struct NuvioPlayerScreen: View {
 
             RoundIcon("goforward.10", label: "Forward 10 seconds", size: .transport) {
                 skip(by: NuvioPlayerModel.skipInterval)
-            }
-
-            if model.hasChapters {
-                RoundIcon("forward.end.fill", label: "Next chapter", size: .transport) {
-                    model.skipChapter(forward: true)
-                    scheduleHide()
-                }
             }
         }
     }
@@ -1871,7 +1798,6 @@ struct NuvioPlayerScreen: View {
                     position: min(position, duration),
                     duration: duration,
                     isScrubbing: scrubTarget != nil || model.isScrubbing || scrubberFocused,
-                    chapterOffsets: model.chapters.map(\.startSeconds),
                     onScrub: { target in
                         model.isScrubbing = true
                         scrubTarget = target
@@ -1994,29 +1920,6 @@ struct NuvioPlayerScreen: View {
         return "speaker.wave.3.fill"
     }
     #endif
-
-    @ViewBuilder
-    private var chapterMenu: some View {
-        if model.hasChapters {
-            Menu {
-                ForEach(Array(model.chapters.enumerated()), id: \.offset) { index, chapter in
-                    Button {
-                        model.select(chapter: chapter)
-                        scheduleHide()
-                    } label: {
-                        Label(
-                            "\(index + 1). \(chapter.name ?? "Chapter \(index + 1)")",
-                            systemImage: model.chapterIndex == index ? "checkmark" : ""
-                        )
-                    }
-                }
-            } label: {
-                menuLabel("list.bullet", title: "Chapters", value: model.chapterIndex >= 0 ? "\(model.chapterIndex + 1) of \(model.chapters.count)" : nil)
-            }
-            .playerMenuChrome()
-            .accessibilityLabel("Chapters")
-        }
-    }
 
     @ViewBuilder
     private var audioMenu: some View {
@@ -2191,8 +2094,6 @@ struct NuvioPlayerScreen: View {
             shortcut(KeyEquivalent("f"), modifiers: []) { model.toggleFill(); revealChrome() }
             shortcut(KeyEquivalent(","), modifiers: []) { model.stepFrame(forward: false); revealChrome(autoHide: false) }
             shortcut(KeyEquivalent("."), modifiers: []) { model.stepFrame(forward: true); revealChrome(autoHide: false) }
-            shortcut(KeyEquivalent("["), modifiers: []) { model.skipChapter(forward: false); revealChrome() }
-            shortcut(KeyEquivalent("]"), modifiers: []) { model.skipChapter(forward: true); revealChrome() }
             shortcut(.escape, modifiers: []) { close() }
         }
         // Present in the hierarchy — a hidden view answers no shortcut — but
@@ -2424,14 +2325,13 @@ private enum PlayerChrome {
 }
 
 /// The time bar. Not a `Slider`: AVPlayer's bar fills solid white behind the
-/// playhead, swells under the finger, grows a knob while it is being dragged
-/// and carries a tick at every chapter boundary — and tvOS has no `Slider` at
-/// all, so the bar is drawn by hand for both.
+/// playhead, swells under the finger and grows a knob while it is being
+/// dragged — and tvOS has no `Slider` at all, so the bar is drawn by hand for
+/// both.
 private struct TimeBar: View {
     let position: Double
     let duration: Double
     let isScrubbing: Bool
-    var chapterOffsets: [Double] = []
     let onScrub: (Double) -> Void
     let onCommit: (Double) -> Void
 
@@ -2449,18 +2349,6 @@ private struct TimeBar: View {
                 Capsule()
                     .fill(.white)
                     .frame(width: max(height, width * fraction))
-
-                // Chapter boundaries, as notches in the track — the same cue
-                // the system player gives a chaptered movie.
-                ForEach(Array(chapterOffsets.enumerated()), id: \.offset) { _, offset in
-                    let mark = duration > 0 ? min(max(offset / duration, 0), 1) : 0
-                    if mark > 0.001, mark < 0.999 {
-                        Rectangle()
-                            .fill(.black.opacity(0.55))
-                            .frame(width: 2, height: height)
-                            .offset(x: width * mark - 1)
-                    }
-                }
             }
             .frame(height: height)
             .frame(maxHeight: .infinity)
@@ -2654,6 +2542,9 @@ private struct PillLabel: View {
     let title: String
     var value: String?
     var carriesGlass = true
+    /// tvOS lifts a focused control onto a white platter; white text on it
+    /// vanishes, so the label turns dark while it has focus.
+    @Environment(\.isFocused) private var isFocused
 
     init(_ systemName: String, title: String, value: String? = nil, carriesGlass: Bool = true) {
         self.systemName = systemName
@@ -2669,19 +2560,21 @@ private struct PillLabel: View {
             Text(title)
                 .fontWeight(.semibold)
             if let value, !value.isEmpty {
-                Text("·").foregroundStyle(.white.opacity(0.5))
+                Text("·").foregroundStyle(ink.opacity(0.5))
                 Text(value.count > 18 ? String(value.prefix(17)) + "…" : value)
-                    .foregroundStyle(.white.opacity(0.7))
+                    .foregroundStyle(ink.opacity(0.7))
             }
         }
         .font(.callout)
         .lineLimit(1)
         // The menu would otherwise squeeze the label to "… · …".
         .fixedSize()
-        .foregroundStyle(.white)
+        .foregroundStyle(ink)
         .padding(.horizontal, 26)
         .padding(.vertical, 16)
         .glassEffect(carriesGlass ? Glass.clear.interactive() : .identity, in: .capsule)
     }
+
+    private var ink: Color { isFocused ? .black : .white }
 }
 #endif

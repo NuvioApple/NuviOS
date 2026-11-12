@@ -471,6 +471,16 @@ struct ProfileScreen: View {
                 Toggle("Play an intro before movies", isOn: $preRollSettings.introEnabled)
                     .tint(theme.palette.accent)
                 if preRollSettings.introEnabled {
+                    ForEach(PreRollSettings.bundledIntros) { intro in
+                        Toggle("\(intro.brand == intro.title ? intro.title : "\(intro.brand) \(intro.title)")", isOn: Binding(
+                            get: { preRollSettings.bundledIntroIDs.contains(intro.id) },
+                            set: { on in
+                                if on { preRollSettings.bundledIntroIDs.insert(intro.id) }
+                                else { preRollSettings.bundledIntroIDs.remove(intro.id) }
+                            }
+                        ))
+                        .tint(theme.palette.accent)
+                    }
                     TextField("Intro video address (one per line)", text: $preRollSettings.introURLs, axis: .vertical)
                         .autocorrectionDisabled()
                         .platformNoAutocapitalization()

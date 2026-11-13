@@ -433,7 +433,7 @@ struct ProfileScreen: View {
                 Toggle("Play a trailer in the hero when a title is focused", isOn: $tmdb.focusPreviews)
                     .tint(theme.palette.accent)
 
-                Toggle("Fixed hero on Movies & Series: play the focused poster's trailer", isOn: $tmdb.pinnedHero)
+                Toggle("Fixed hero on Home, Movies & Series: play the focused poster's trailer", isOn: $tmdb.pinnedHero)
                     .tint(theme.palette.accent)
 
                 Toggle("Play trailer sound (Play/Pause mutes)", isOn: $tmdb.trailerSound)
@@ -468,6 +468,7 @@ struct ProfileScreen: View {
                     }
                     .pickerStyle(.segmented)
                 }
+                #if !os(macOS)
                 Toggle("Play an intro before movies", isOn: $preRollSettings.introEnabled)
                     .tint(theme.palette.accent)
                 if preRollSettings.introEnabled {
@@ -485,6 +486,7 @@ struct ProfileScreen: View {
                         .autocorrectionDisabled()
                         .platformNoAutocapitalization()
                 }
+                #endif
                 Text("Trailers are for movies and shows opening in the next six months, matched to the genre. Skipped when resuming more than 5 minutes in.")
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.45))

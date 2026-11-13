@@ -234,6 +234,13 @@ struct ContinueWatchingCard: View {
 
     private var height: CGFloat { (width * 9 / 16).rounded() }
 
+    #if os(tvOS)
+    @EnvironmentObject private var tmdb: TmdbSettings
+    private var hidesCaption: Bool { tmdb.pinnedHero }
+    #else
+    private var hidesCaption: Bool { false }
+    #endif
+
     var body: some View {
         Button(action: action) {
             FocusReader { isFocused in
@@ -244,7 +251,8 @@ struct ContinueWatchingCard: View {
                                 .strokeBorder(palette.accent.opacity(isFocused ? 0.9 : 0), lineWidth: 2)
                         }
                         .shadow(color: .black.opacity(isFocused ? 0.5 : 0), radius: 18, y: 10)
-                    caption
+                    // With the fixed hero on, the hero names the title.
+                    if !hidesCaption { caption }
                 }
                 .contentShape(Rectangle())
                 .scaleEffect(isFocused ? 1.06 : 1)

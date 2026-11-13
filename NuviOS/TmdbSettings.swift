@@ -62,7 +62,7 @@ final class TmdbSettings: ObservableObject {
     }
 
     /// The TV's "fixed hero": the stage stays pinned at the top of Movies
-    /// and Series (Home keeps its carousel) while the shelves scroll beneath it, and shows —
+    /// and Series and on Home while the shelves scroll beneath it, and shows —
     /// trailer and all — whichever poster has focus. Off keeps the rotating
     /// carousel that scrolls away with the page.
     @Published var pinnedHero: Bool {
@@ -109,7 +109,7 @@ final class TmdbSettings: ObservableObject {
         self.trailerioURL = defaults.string(forKey: Self.trailerioKey) ?? Self.defaultTrailerioURL
         self.focusPreviews = defaults.object(forKey: Self.focusPreviewsKey) as? Bool ?? true
         self.trailerSound = defaults.object(forKey: Self.trailerSoundKey) as? Bool ?? true
-        self.pinnedHero = defaults.object(forKey: Self.pinnedHeroKey) as? Bool ?? false
+        self.pinnedHero = defaults.object(forKey: Self.pinnedHeroKey) as? Bool ?? true
         self.preferIMAX = defaults.object(forKey: TrailerioPreferences.preferIMAXKey) as? Bool ?? true
     }
 }

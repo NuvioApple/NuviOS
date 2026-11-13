@@ -519,6 +519,7 @@ struct PosterCard: View {
 
     #if os(tvOS)
     @Environment(HeroFocus.self) private var heroFocus: HeroFocus?
+    @EnvironmentObject private var tmdb: TmdbSettings
     #endif
     @Environment(\.shelfBand) private var shelfBand
     @Environment(\.shelfID) private var shelfID
@@ -544,7 +545,12 @@ struct PosterCard: View {
                             }
                     }
 
+                    #if os(tvOS)
+                    // With the fixed hero on, the hero names the title.
+                    if !tmdb.pinnedHero { caption(isFocused: isFocused) }
+                    #else
                     caption(isFocused: isFocused)
+                    #endif
                 }
                 #if os(tvOS)
                 // The hero above the shelves shows whatever is focused here,
@@ -1019,6 +1025,15 @@ struct ShelfRow<Row: View>: View {
                 .environment(\.shelfID, id)
             header
         }
+        // A row that has scrolled up past the top of the shelves is gone:
+        // under the fixed hero its bottom edge would otherwise peek through,
+        // wherever the focus engine happens to park the row below.
+        .visualEffect { content, geometry in
+            // Judged by how much is left, not where the top is: the focused
+            // row itself can park with its top a little above the edge.
+            content.opacity(geometry.frame(in: .scrollView).maxY < 140 ? 0 : 1)
+        }
+        .animation(.easeOut(duration: 0.2), value: id)
         .id(id)
         #else
         VStack(alignment: .leading, spacing: Phone.shelfHeaderGap) {

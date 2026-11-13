@@ -24,14 +24,19 @@ final class HeroFocus {
     private(set) var collection: CollectionHero?
     /// The row that card belongs to, so the page can scroll that row into place.
     private(set) var row: String?
+    /// Bumped on every card focus, even a repeat, so the page can tell focus
+    /// has gone back into the rows.
+    private(set) var tick = 0
 
     func focus(_ hero: HeroItem, row: String?) {
+        tick &+= 1
         if hero != item { item = hero }
         if collection != nil { collection = nil }
         if row != self.row { self.row = row }
     }
 
     func focus(collection: CollectionHero, row: String?) {
+        tick &+= 1
         if collection != self.collection { self.collection = collection }
         if row != self.row { self.row = row }
     }
@@ -449,6 +454,9 @@ struct PinnedHero: View {
     /// Rotated through until a card has focus.
     let items: [HeroItem]
     let metrics: LayoutMetrics
+    /// Home only: the stage takes focus when the viewer presses Up past the
+    /// first row, and hands it back to the carousel.
+    var onFocus: (() -> Void)? = nil
 
     @Environment(HeroFocus.self) private var heroFocus: HeroFocus?
     @Environment(\.palette) private var palette
@@ -457,6 +465,7 @@ struct PinnedHero: View {
 
     @State private var index = 0
     @State private var isTrailerPlaying = false
+    @FocusState private var isFocused: Bool
 
     /// The stage's share of the screen; the rest is the shelves.
     private static let share: CGFloat = 0.56
@@ -470,7 +479,13 @@ struct PinnedHero: View {
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             palette.background
-            if let current {
+            if let folder = heroFocus?.collection {
+                // A folder tile already plays its own animation on focus, so
+                // the stage stays still: the backdrop and the folder's logo.
+                folderBackdrop(folder)
+                scrims
+                folderCopy(folder)
+            } else if let current {
                 backdrop(current)
                 scrims
                 copy(current)
@@ -481,9 +496,73 @@ struct PinnedHero: View {
         .clipped()
         .overlay(alignment: .bottomTrailing) { soundBadge }
         .ignoresSafeArea(edges: [.top, .horizontal])
-        .allowsHitTesting(false)
+        .allowsHitTesting(onFocus != nil)
+        .focusable(onFocus != nil)
+        .focusEffectDisabled()
+        .focused($isFocused)
+        .onChange(of: isFocused) { _, focused in if focused { onFocus?() } }
         .accessibilityElement(children: .combine)
         .task(id: items.count) { await rotate() }
+    }
+
+    private func folderBackdrop(_ folder: CollectionHero) -> some View {
+        GeometryReader { geo in
+            KenBurnsImage(url: folder.backdropURL)
+                .id(folder.id)
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.45), value: folder.id)
+                .frame(width: geo.size.height * 16 / 9, height: geo.size.height)
+                .clipped()
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .black.opacity(0.55), location: 0.16),
+                            .init(color: .black, location: 0.42),
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                }
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .trailing)
+        }
+    }
+
+    /// The folder's logo, or its name set large, over the collection it is in.
+    private func folderCopy(_ folder: CollectionHero) -> some View {
+        VStack(alignment: .leading, spacing: metrics.lerp(10, 16)) {
+            Group {
+                if let logo = folder.logoURL {
+                    RemoteImage(url: logo, contentMode: .fit)
+                        .frame(
+                            maxWidth: metrics.heroLogoMaxWidth,
+                            maxHeight: metrics.heroLogoMaxHeight,
+                            alignment: .leading
+                        )
+                } else {
+                    Text(folder.title)
+                        .font(.system(size: metrics.heroTitleSize, weight: .black))
+                        .tracking(metrics.heroTitleSize * -0.022)
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.6)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overArtwork()
+
+            Text("COLLECTION  ·  \(folder.collectionTitle.uppercased())")
+                .font(.system(size: metrics.lerp(12, 19), weight: .semibold))
+                .tracking(metrics.lerp(0.8, 1.6))
+                .foregroundStyle(.white.opacity(0.78))
+                .lineLimit(1)
+                .overArtwork()
+        }
+        .frame(width: metrics.heroContentWidth, alignment: .leading)
+        .padding(.horizontal, metrics.pagePadding)
+        .padding(.bottom, metrics.lerp(16, 30))
+        .animation(.easeInOut(duration: 0.35), value: folder.id)
     }
 
     private func backdrop(_ hero: HeroItem) -> some View {
@@ -566,7 +645,7 @@ struct PinnedHero: View {
                 Text(synopsis)
                     .font(.system(size: metrics.lerp(14, 22)))
                     .foregroundStyle(.white.opacity(0.82))
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .lineSpacing(metrics.lerp(3, 6))
                     .fixedSize(horizontal: false, vertical: true)
                     .overArtwork()
@@ -599,7 +678,7 @@ struct PinnedHero: View {
         var held = 0
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(1))
-            if heroFocus?.item != nil || isTrailerPlaying { held = 0; continue }
+            if heroFocus?.item != nil || heroFocus?.collection != nil || isTrailerPlaying { held = 0; continue }
             held += 1
             if held >= 9 {
                 held = 0

@@ -270,7 +270,9 @@ struct CollectionShelf: View {
                                             focusedFolderID = folder.id
                                             heroFocus?.focus(
                                                 collection: CollectionHero(folder: folder, collection: collection),
-                                                row: shelfID
+                                                // This view builds the row itself, so the
+                                                // id isn't in its environment yet.
+                                                row: "collection|\(collection.id)"
                                             )
                                         }
                                     }
@@ -400,6 +402,9 @@ struct FolderScreen: View {
     /// The folder's hero video has finished (or never played), so its title
     /// can show. Folders without a hero video never wait.
     @State private var heroVideoDone = false
+    #if os(tvOS)
+    @EnvironmentObject private var tmdb: TmdbSettings
+    #endif
     /// Folders only: the shell's own tabs do this everywhere else.
     @State private var typeFilter: FolderTypeFilter = .all
     #if os(macOS)
@@ -410,7 +415,11 @@ struct FolderScreen: View {
     #endif
 
     private var titleHeldBack: Bool {
-        open.folder.heroVideoURL.flatMap(URL.init(string:)) != nil && !heroVideoDone
+        heroVideoURL != nil && !heroVideoDone
+    }
+
+    private var heroVideoURL: URL? {
+        open.folder.heroVideoURL.flatMap(URL.init(string:))
     }
 
     var body: some View {
@@ -450,7 +459,38 @@ struct FolderScreen: View {
             // The banner is allowed under the status bar and the nav bar —
             // artwork that stops short of the edges isn't a title card.
             .ignoresSafeArea(edges: .top)
+
+            #if os(tvOS)
+            // The folder's video is its intro: the whole screen, nothing over
+            // it, then it fades into the page. Select skips it.
+            if let intro = heroVideoURL, !heroVideoDone {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.6)) { heroVideoDone = true }
+                } label: {
+                    ZStack {
+                        Color.black
+                        HeroVideo(
+                            url: intro,
+                            delay: .milliseconds(150),
+                            onFinish: {
+                                withAnimation(.easeInOut(duration: 0.9)) { heroVideoDone = true }
+                            },
+                            muted: !tmdb.trailerSound
+                        )
+                    }
+                    .ignoresSafeArea()
+                }
+                .buttonStyle(BarePlatterStyle())
+                .ignoresSafeArea()
+                .transition(.opacity)
+                .zIndex(10)
+            }
+            #endif
         }
+        #if os(tvOS)
+        // Nothing over the intro, the tab bar included.
+        .toolbar(titleHeldBack ? .hidden : .automatic, for: .tabBar)
+        #endif
         .navigationTitle("")
         .platformInlineTitle()
         .platformHiddenNavigationBackground()
@@ -485,7 +525,14 @@ struct FolderScreen: View {
                         .flatMap(URL.init(string:)),
                     animated: open.folder.animatedCoverURL,
                     height: bannerHeight,
-                    videoURL: open.folder.heroVideoURL.flatMap(URL.init(string:)),
+                    // On the TV the video plays as a full-screen intro instead.
+                    videoURL: {
+                        #if os(tvOS)
+                        nil
+                        #else
+                        heroVideoURL
+                        #endif
+                    }(),
                     onVideoFinish: { heroVideoDone = true }
                 )
 
@@ -598,6 +645,33 @@ struct FolderScreen: View {
             }
             .pickerStyle(.inline)
         } label: {
+            #if os(tvOS)
+            // The system's plain style lays a white platter under the label,
+            // which hid its white text. Draw focus ourselves: a white pill
+            // with dark text, like the app's other pills.
+            FocusReader { isFocused in
+                HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal.decrease")
+                    Text(typeFilter.label)
+                }
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(
+                    isFocused ? Color.black
+                        : (typeFilter == .all ? Color.white.opacity(0.85) : palette.onAccent)
+                )
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+                .background {
+                    Capsule().fill(
+                        isFocused ? AnyShapeStyle(Color.white)
+                            : typeFilter == .all ? AnyShapeStyle(Color.white.opacity(0.14))
+                            : AnyShapeStyle(palette.accent)
+                    )
+                }
+                .scaleEffect(isFocused ? 1.06 : 1)
+                .animation(.easeOut(duration: 0.15), value: isFocused)
+            }
+            #else
             HStack(spacing: 6) {
                 Image(systemName: "line.3.horizontal.decrease")
                 Text(typeFilter.label)
@@ -613,9 +687,14 @@ struct FolderScreen: View {
                         : AnyShapeStyle(palette.accent)
                 )
             }
+            #endif
         }
         .menuStyle(.button)
+        #if os(tvOS)
+        .buttonStyle(BarePlatterStyle())
+        #else
         .buttonStyle(.plain)
+        #endif
         .menuIndicator(.hidden)
         .fixedSize()
     }

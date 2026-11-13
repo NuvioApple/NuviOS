@@ -97,7 +97,11 @@ final class PreRollSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        #if os(macOS)
+        introEnabled = false // intros are not offered on macOS
+        #else
         introEnabled = defaults.object(forKey: Self.introEnabledKey) as? Bool ?? false
+        #endif
         introURLs = defaults.string(forKey: Self.introURLsKey) ?? ""
         bundledIntroIDs = Set(defaults.stringArray(forKey: Self.bundledIntroIDsKey)
             ?? Self.bundledIntros.map(\.id))

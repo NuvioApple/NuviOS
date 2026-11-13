@@ -36,23 +36,39 @@ struct BrowseScreen: View {
     @State private var heroFocus = HeroFocus()
     /// Bumped when focus returns to the hero, to scroll back up to it.
     @State private var heroReturn = 0
+    /// Home only: focus has gone down into the rows, so the carousel has
+    /// folded into the fixed hero. Up past the first row unfolds it again.
+    @State private var inRows = false
     @Namespace private var focusSpace
     #endif
 
-    private var hasBillboard: Bool { showsHero && !model.heroItems.isEmpty }
+    private var hasBillboard: Bool { showsHero && !showsPinnedStage && !model.heroItems.isEmpty }
+
+    /// Whether the fixed stage is up: always on Movies and Series, and on Home
+    /// once focus has left the carousel for the rows.
+    private var showsPinnedStage: Bool {
+        #if os(tvOS)
+        usesPinnedHero && (!showsHero || inRows)
+        #else
+        false
+        #endif
+    }
 
     /// The "fixed hero" setting: a stage pinned above the shelves that shows
-    /// whatever poster has focus. TV only, and only on the browse tabs
-    /// (Movies, Series): Home keeps its carousel.
+    /// whatever poster has focus. TV only; on Home it replaces the carousel.
     private var usesPinnedHero: Bool {
         #if os(tvOS)
-        tmdb.pinnedHero && !showsHero
+        tmdb.pinnedHero
         #else
         false
         #endif
     }
 
     #if os(tvOS)
+    /// How much of the shelves' top edge is covered under the fixed stage:
+    /// enough to hide the row above, short of where any row's title starts.
+    static let pinnedRowGap: CGFloat = 14
+
     /// What the pinned stage shows before any card has focus: the featured
     /// titles, narrowed to this tab's type, or else the first row's titles.
     private var pinnedFallback: [HeroItem] {
@@ -165,14 +181,46 @@ struct BrowseScreen: View {
         // at the top of the screen (its copy sits at the bottom, clear of the
         // tab bar) and the shelves run to the bottom edge.
         Group {
-            if usesPinnedHero {
-                // The fixed hero: it never scrolls, the shelves move under it.
-                VStack(spacing: 0) {
-                    PinnedHero(items: pinnedFallback, metrics: heroMetrics)
-                    shelves
+            // One VStack either way, so the shelves keep their identity (and
+            // focus) when Home's carousel folds into the fixed stage.
+            VStack(spacing: 0) {
+                if showsPinnedStage {
+                    // The fixed hero: it never scrolls, the shelves move under it.
+                    PinnedHero(
+                        items: pinnedFallback,
+                        metrics: heroMetrics,
+                        onFocus: showsHero ? {
+                            inRows = false
+                            heroReturn += 1
+                        } : nil
+                    )
+                    .transition(.opacity)
                 }
-            } else {
+                // tvOS scroll views don't clip, so a row scrolled up past the
+                // stage would still draw a sliver beneath it.
                 shelves
+                    .clipShape(Rectangle().inset(by: showsPinnedStage ? 0 : -4000))
+                    // The focus engine parks a row a little below the stage, and
+                    // the bottom edge of the row above showed in that gap.
+                    .overlay(alignment: .top) {
+                        if showsPinnedStage {
+                            LinearGradient(
+                                stops: [
+                                    .init(color: palette.background, location: 0),
+                                    .init(color: palette.background, location: 0.7),
+                                    .init(color: palette.background.opacity(0), location: 1),
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            .frame(height: Self.pinnedRowGap)
+                            .allowsHitTesting(false)
+                        }
+                    }
+            }
+            .animation(.easeInOut(duration: 0.35), value: showsPinnedStage)
+            .onChange(of: heroFocus.tick) { _, _ in
+                if usesPinnedHero, showsHero, !inRows { inRows = true }
             }
         }
         .focusScope(focusSpace)
@@ -194,8 +242,22 @@ struct BrowseScreen: View {
                 // instead: the row's top, just beneath the hero.
                 .onChange(of: heroFocus.row) { _, row in
                     guard let row else { return }
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        proxy.scrollTo(row, anchor: UnitPoint(x: 0.5, y: 0.08))
+                    // After the focus engine's own scroll, so ours is the one
+                    // that sticks; otherwise its margin leaves the row parked
+                    // low with the row above peeking under the hero.
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(80))
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            proxy.scrollTo(row, anchor: .top)
+                        }
+                    }
+                }
+                // Home's carousel just folded away: the offset it left would
+                // carry the focused row off the top, so put the row back.
+                .onChange(of: inRows) { _, folded in
+                    guard folded, let row = heroFocus.row else { return }
+                    Task { @MainActor in
+                        proxy.scrollTo(row, anchor: .top)
                     }
                 }
                 .onChange(of: heroReturn) { _, _ in
@@ -292,7 +354,10 @@ struct BrowseScreen: View {
         }
         // Only the billboard is allowed under the status bar; without one, the
         // first row would slide beneath the top bar.
-        .ignoresSafeArea(edges: hasBillboard ? .top : [])
+        // Under the fixed stage too: the tab bar would otherwise inset the
+        // scroll view, leaving rows parked low and the first row's title
+        // hidden beneath the stage.
+        .ignoresSafeArea(edges: hasBillboard || showsPinnedStage ? .top : [])
         .scrollIndicators(.hidden)
         .trackingScrollProgress(over: 220, into: $scrollProgress)
         .refreshable { await model.refresh(session: session, profile: profiles.current) }

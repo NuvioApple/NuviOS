@@ -1196,6 +1196,10 @@ struct NuvioPlayerScreen: View {
     @Environment(\.platformCoverDismiss) private var coverDismiss
     @StateObject private var model = NuvioPlayerModel()
     @State private var chromeVisible = true
+    #if os(macOS)
+    /// Mirrors the window so the full-screen glyph flips however it was entered.
+    @State private var isFullScreen = MacFullScreen.isActive
+    #endif
     @State private var hideTask: Task<Void, Never>?
     /// The position the thumb is being dragged to, before it is committed.
     @State private var scrubTarget: Double?
@@ -1248,6 +1252,14 @@ struct NuvioPlayerScreen: View {
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { location in
+                    #if os(macOS)
+                    // On a Mac a double-click on the picture is full screen,
+                    // the way QuickTime and every browser player answer it.
+                    _ = location
+                    MacFullScreen.toggle()
+                    revealChrome()
+                    return
+                    #endif
                     // Double-tap either half to skip, the way every phone
                     // player does. Declared before the single tap so the two
                     // resolve against each other here rather than across
@@ -1308,6 +1320,10 @@ struct NuvioPlayerScreen: View {
         // Mac, the whole screen on a phone or a TV.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+        #if os(macOS)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in isFullScreen = true }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in isFullScreen = false }
+        #endif
         .preferredColorScheme(.dark)
         #if os(iOS)
         // Status bar and home indicator are phone chrome; a Mac has neither.
@@ -1720,7 +1736,15 @@ struct NuvioPlayerScreen: View {
                     audioMenu
                     subtitleMenu
                     speedMenu
+                    #if os(macOS)
+                    // On a Mac full screen replaces the zoom menu.
+                    RoundIcon(
+                        isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                        label: isFullScreen ? "Exit Full Screen" : "Enter Full Screen"
+                    ) { MacFullScreen.toggle() }
+                    #else
                     fitMenu
+                    #endif
                 }
             }
 
@@ -2091,10 +2115,22 @@ struct NuvioPlayerScreen: View {
             shortcut(.upArrow, modifiers: []) { model.nudgeVolume(0.05); revealChrome() }
             shortcut(.downArrow, modifiers: []) { model.nudgeVolume(-0.05); revealChrome() }
             shortcut(KeyEquivalent("m"), modifiers: []) { model.toggleMute(); revealChrome() }
+            #if os(macOS)
+            // F is full screen on a Mac, as in QuickTime and YouTube; the
+            // fill toggle stays in the fit menu.
+            shortcut(KeyEquivalent("f"), modifiers: []) { MacFullScreen.toggle(); revealChrome() }
+            #else
             shortcut(KeyEquivalent("f"), modifiers: []) { model.toggleFill(); revealChrome() }
+            #endif
             shortcut(KeyEquivalent(","), modifiers: []) { model.stepFrame(forward: false); revealChrome(autoHide: false) }
             shortcut(KeyEquivalent("."), modifiers: []) { model.stepFrame(forward: true); revealChrome(autoHide: false) }
-            shortcut(.escape, modifiers: []) { close() }
+            shortcut(.escape, modifiers: []) {
+                #if os(macOS)
+                // Esc steps out of full screen first, then closes the player.
+                if MacFullScreen.isActive { MacFullScreen.toggle(); return }
+                #endif
+                close()
+            }
         }
         // Present in the hierarchy — a hidden view answers no shortcut — but
         // invisible and out of the way of every gesture above.
@@ -2175,6 +2211,10 @@ struct NuvioPlayerScreen: View {
     }
 
     private func close() {
+        #if os(macOS)
+        // Closing the player hands the library back in a normal window.
+        if MacFullScreen.isActive { MacFullScreen.toggle() }
+        #endif
         model.stop()
         if let coverDismiss {
             coverDismiss()
@@ -2576,5 +2616,27 @@ private struct PillLabel: View {
     }
 
     private var ink: Color { isFocused ? .black : .white }
+}
+#endif
+
+
+#if os(macOS)
+import AppKit
+
+/// The Mac player draws over the main window, so full screen is the window's.
+enum MacFullScreen {
+    static var window: NSWindow? {
+        NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain }
+    }
+
+    static var isActive: Bool {
+        window?.styleMask.contains(.fullScreen) ?? false
+    }
+
+    static func toggle() {
+        guard let window else { return }
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        window.toggleFullScreen(nil)
+    }
 }
 #endif

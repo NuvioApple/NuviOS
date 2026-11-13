@@ -68,6 +68,7 @@ struct FocusTrailerPreview: View {
     @State private var player: AVPlayer?
     @State private var isShowing = false
     @State private var endObserver: NSObjectProtocol?
+    @State private var stallObserver: NSObjectProtocol?
 
     /// How long focus has to rest before the trailer starts. Short enough to
     /// read as the card answering focus; long enough that sweeping across a
@@ -125,12 +126,24 @@ struct FocusTrailerPreview: View {
         }
 
         let playerItem = AVPlayerItem(url: url)
-        // A preview is a few seconds of picture; there's no reason to buffer
-        // far ahead of it, and a short horizon starts playback sooner.
-        playerItem.preferredForwardBufferDuration = 4
+        // The whole trailer plays now, not a few seconds of it, so let the
+        // system buffer as far ahead as it likes. A 4-second horizon ran dry
+        // partway through and the picture froze there.
         let next = AVPlayer(playerItem: playerItem)
         next.isMuted = !tmdb.trailerSound || runsInSimulator
+        // Start at once rather than waiting to fill a buffer...
         next.automaticallyWaitsToMinimizeStalling = false
+
+        // ...but without waiting, a stall stops the player for good. Pick it
+        // back up once data arrives.
+        stallObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: playerItem,
+            queue: .main
+        ) { _ in Task { @MainActor in
+            next.automaticallyWaitsToMinimizeStalling = true
+            next.play()
+        } }
 
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
@@ -149,6 +162,10 @@ struct FocusTrailerPreview: View {
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
             self.endObserver = nil
+        }
+        if let stallObserver {
+            NotificationCenter.default.removeObserver(stallObserver)
+            self.stallObserver = nil
         }
         player?.pause()
         player = nil

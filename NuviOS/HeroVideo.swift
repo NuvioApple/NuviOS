@@ -98,6 +98,8 @@ struct HeroVideo: View {
     /// started, or it was cut short — as its fade out begins. A title that
     /// was held back for the video comes in on this.
     var onFinish: () -> Void = {}
+    /// Off for a folder's intro, which plays with its sound.
+    var muted: Bool = true
 
     @State private var player: AVPlayer?
     @State private var isShowing = false
@@ -128,7 +130,7 @@ struct HeroVideo: View {
 
         let item = AVPlayerItem(url: url)
         let next = AVPlayer(playerItem: item)
-        next.isMuted = true
+        next.isMuted = muted
         next.automaticallyWaitsToMinimizeStalling = true
 
         endObserver = NotificationCenter.default.addObserver(

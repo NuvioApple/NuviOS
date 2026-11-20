@@ -467,6 +467,44 @@ struct Stream: Decodable, Identifiable, Equatable {
         return .unknown
     }
 
+    /// Whether dialling this link could make a debrid host go and fetch it.
+    ///
+    /// A debrid addon's link (Torrentio, Comet, MediaFusion, StremThru,
+    /// AIOStreams…) is a resolve endpoint: requesting an uncached one tells
+    /// the host to start downloading it, and Torbox counts that first fetch
+    /// against the account if the release is later taken down. Streaming
+    /// something already cached never is. So a link like this is only ever
+    /// dialled when the addon says it is cached.
+    var routesThroughDebrid: Bool {
+        let address = (url ?? "").lowercased()
+        let addressHints = [
+            "torbox", "real-debrid", "realdebrid", "alldebrid", "premiumize",
+            "debrid-link", "offcloud", "easydebrid", "stremthru",
+            "/resolve/", "/playback/", "/play/"
+        ]
+        if addressHints.contains(where: address.contains) { return true }
+        let text = [name, title, description].compactMap { $0 }.joined(separator: " ")
+        // Service tags addons put on a row: [TB], [RD], TB+, RD⏳ and so on.
+        // Bracketed or "+"-suffixed only, so "WEB-DL" and the like don't count.
+        return text.range(
+            of: #"\[(TB|RD|AD|PM|DL|OC|ED)[+⚡⏳ \]]|\b(TB|RD|AD|PM)\+|(?i)torbox"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    /// Whether the app may dial this link without risking a debrid download:
+    /// cached on its host, or not routed through a debrid host at all. A
+    /// client-resolved row is safe too — the resolver asks Torbox with
+    /// `add_only_if_cached` and Real-Debrid's leftover is deleted.
+    var isSafeToStart: Bool {
+        if needsResolve { return true }
+        switch cacheState {
+        case .ready: return true
+        case .notReady: return false
+        case .unknown: return !routesThroughDebrid
+        }
+    }
+
     /// The bold line of a row. Addons put the quality either in `name` or in
     /// the first line of `title`.
     var headline: String {

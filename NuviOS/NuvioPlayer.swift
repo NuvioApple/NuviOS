@@ -199,7 +199,7 @@ final class NuvioPlayerModel: NSObject, ObservableObject {
 
     /// The engine every source is opened on, unless the device cannot build it.
     private func makePreferredEngine() -> PlaybackEngine {
-        AetherPlaybackEngine() ?? VLCPlaybackEngine()
+        return AetherPlaybackEngine() ?? VLCPlaybackEngine()
     }
 
     /// Points the model at an engine and gives it the surface.

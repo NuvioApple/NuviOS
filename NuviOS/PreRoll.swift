@@ -97,8 +97,8 @@ final class PreRollSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        #if os(macOS)
-        introEnabled = false // intros are not offered on macOS
+        #if os(macOS) && !DEBUG
+        introEnabled = false // intros ship in the Mac Debug build only
         #else
         introEnabled = defaults.object(forKey: Self.introEnabledKey) as? Bool ?? false
         #endif

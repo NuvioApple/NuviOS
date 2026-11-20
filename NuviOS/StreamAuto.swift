@@ -447,7 +447,9 @@ final class StreamAutoSelector: ObservableObject {
         // soon" video — so it passes every probe and has to be excluded by
         // what the addon says about it. Marked-ready sources first; unmarked
         // ones only if nothing is marked; known-uncached ones never.
-        let playable = Self.deduplicated(streams.filter(\.isPlayable))
+        // Dialling is itself a request: an uncached debrid link probed here
+        // would start a download on the host, so unsafe rows are never probed.
+        let playable = Self.deduplicated(streams.filter { $0.isPlayable && $0.isSafeToStart })
         let ready = playable.filter { $0.cacheState == .ready }
         let unknown = playable.filter { $0.cacheState == .unknown }
         let candidates = (ready.isEmpty ? unknown : ready)

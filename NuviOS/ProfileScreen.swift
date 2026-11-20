@@ -468,7 +468,7 @@ struct ProfileScreen: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                #if !os(macOS)
+                #if !os(macOS) || DEBUG
                 Toggle("Play an intro before movies", isOn: $preRollSettings.introEnabled)
                     .tint(theme.palette.accent)
                 if preRollSettings.introEnabled {

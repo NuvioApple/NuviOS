@@ -712,7 +712,7 @@ struct StreamPicker: View {
             ordered = streams.filter(\.isPlayable)
         }
         return ordered
-            .filter { $0.id != chosen.id && $0.cacheState != .notReady }
+            .filter { $0.id != chosen.id && $0.isSafeToStart }
             .compactMap { stream in
                 guard let url = stream.playbackURL else { return nil }
                 return PlaybackAlternate(url: url, headers: stream.behaviorHints.requestHeaders)
@@ -791,6 +791,16 @@ struct StreamPicker: View {
     private func play(_ stream: Stream) {
         // A deliberate tap ends the audition, whatever it was about to decide.
         auto.cancel()
+
+        // Never start a debrid download: an uncached link asks the host to
+        // fetch the release, and Torbox strikes the first fetcher of anything
+        // later taken down. Only what is already cached is played.
+        guard stream.isSafeToStart else {
+            externalError = stream.cacheState == .notReady
+                ? "This source isn't cached on your debrid service, and NuviOS only plays cached sources so nothing is downloaded to your account. Pick one marked ⚡ or +."
+                : "This debrid source doesn't say whether it's cached, so NuviOS won't open it in case it starts a download on your account. Pick one marked ⚡ or +."
+            return
+        }
 
         if stream.needsResolve {
             resolveThenPlay(stream)
